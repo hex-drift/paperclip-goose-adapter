@@ -32,7 +32,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GOOSE_MODEL } from "../index.js";
-import { applyGooseEnvironment, createAiGateProviderAsset, resolveGooseRuntimeConfig } from "./config.js";
+import { applyGooseEnvironment, createGooseRuntimeAsset, resolveGooseRuntimeConfig } from "./config.js";
 import { parseGooseStreamJson } from "./parse.js";
 
 function firstNonEmptyLine(text: string): string {
@@ -153,12 +153,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, { timeoutSec });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, target, cwd, runtimeEnv);
 
-  const providerAsset = await createAiGateProviderAsset({ runtime: runtimeConfig });
-  let localProviderRoot: string | null = providerAsset?.localDir ?? null;
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
+  let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let restoreWorkspace: (() => Promise<void>) | null = null;
   try {
-    const assets = providerAsset
-      ? [{ key: "goosePathRoot", localDir: providerAsset.localDir }]
+    const assets = runtimeAsset
+      ? [{ key: "goosePathRoot", localDir: runtimeAsset.localDir }]
       : [];
     await onLog(
       "stdout",
@@ -183,7 +184,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const runtimeSessionParams = parseObject(ctx.runtime.sessionParams);
     const savedSession = typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId.trim() : "";
-    const persistSession = runtimeConfig.persistSession && !providerAsset;
+    const persistSession = runtimeConfig.persistSession && !runtimeAsset;
     const sessionId = persistSession ? savedSession || `paperclip-${agent.id}` : "";
     const prompt = buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId));
     const args = ["run", "--output-format", "stream-json"];
@@ -210,7 +211,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runtimeConfig.subagentModel
           ? `Goose subagent model: ${runtimeConfig.subagentProvider ?? runtimeConfig.provider}/${runtimeConfig.subagentModel}`
           : "Goose subagent model comes from the remote Goose configuration.",
-        providerAsset ? `Staged AI Gate provider catalog with ${runtimeConfig.aiGateModels.length} model(s).` : "Using the remote Goose provider configuration.",
+        runtimeConfig.provider === "ai-gate"
+          ? "Mapped AI Gate to Goose's built-in OpenAI-compatible provider."
+          : "Using the configured Goose provider.",
+        runtimeAsset
+          ? `Injected ${runtimeAsset.mcpCount} Paperclip runtime MCP server(s) into Goose streamable HTTP extensions.`
+          : "No Paperclip runtime MCP servers were attached to this run.",
       ],
       commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
       env: loggedEnv,

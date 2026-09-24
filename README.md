@@ -115,14 +115,18 @@ GOOSE_SUBAGENT_PROVIDER=ai-gate
 GOOSE_SUBAGENT_MODEL=gpt-6-luna
 ```
 
-`AI_GATE_MODELS` also accepts a JSON string array. When `AI_GATE_BASE_URL` and
-the model catalog are present, the adapter stages a Goose custom provider file
-on the SSH worker for that run. The key is referenced through
-`api_key_env: AI_GATE_API_KEY` and is not written into the provider file.
+`AI_GATE_MODELS` also accepts a JSON string array. The adapter maps AI Gate to
+Goose's built-in OpenAI-compatible provider and forwards the endpoint as
+`OPENAI_HOST`/`OPENAI_BASE_PATH`; the API key is forwarded as
+`OPENAI_API_KEY` only to the remote Goose process.
 
-If the remote worker already has an `ai-gate` Goose custom provider configured,
-omit `AI_GATE_BASE_URL` and `AI_GATE_MODELS`; the adapter will use that remote
-configuration.
+`AI_GATE_BASE_URL` should normally be `https://ai-gate.example/v1`; a full
+`/v1/chat/completions` URL is also accepted.
+
+Paperclip runtime MCP connections are also forwarded automatically. The adapter
+creates temporary Goose `streamable_http` extensions under the per-run
+`GOOSE_PATH_ROOT`, including each Paperclip-issued bearer token. The tokens are
+not written to the prompt, logs, or the persistent Goose home.
 
 ## Model separation
 

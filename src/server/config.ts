@@ -20,6 +20,13 @@ export interface GooseRuntimeConfig {
   maxTurns: number | null;
 }
 
+export interface GooseRuntimeMcpServer {
+  name: string;
+  url: string;
+  token: string;
+  connectionId: string;
+}
+
 const DEFAULT_PROVIDER = "ai-gate";
 const DEFAULT_MAIN_MODEL = "gpt-6-sol";
 const DEFAULT_SUBAGENT_MODEL = "gpt-6-luna";
@@ -122,40 +129,75 @@ export function applyGooseEnvironment(
   runtime: GooseRuntimeConfig,
 ): Record<string, string> {
   const next = { ...env };
-  next.GOOSE_PROVIDER = runtime.provider;
+  const mainUsesAiGate = runtime.provider === DEFAULT_PROVIDER;
+  const subagentUsesAiGate = runtime.subagentProvider === DEFAULT_PROVIDER;
+  next.GOOSE_PROVIDER = mainUsesAiGate ? "openai" : runtime.provider;
   next.GOOSE_MODEL = runtime.model;
-  if (runtime.subagentProvider) next.GOOSE_SUBAGENT_PROVIDER = runtime.subagentProvider;
+  if (runtime.subagentProvider) {
+    next.GOOSE_SUBAGENT_PROVIDER = subagentUsesAiGate ? "openai" : runtime.subagentProvider;
+  }
   if (runtime.subagentModel) next.GOOSE_SUBAGENT_MODEL = runtime.subagentModel;
+  if (mainUsesAiGate || subagentUsesAiGate) {
+    const baseUrl = stringValue(env.AI_GATE_BASE_URL);
+    if (baseUrl) {
+      const normalized = baseUrl.replace(/\/+$/, "");
+      const chatSuffix = "/v1/chat/completions";
+      const v1Suffix = "/v1";
+      if (normalized.endsWith(chatSuffix)) {
+        next.OPENAI_HOST = normalized.slice(0, -chatSuffix.length) || normalized;
+        next.OPENAI_BASE_PATH = "v1/chat/completions";
+      } else if (normalized.endsWith(v1Suffix)) {
+        next.OPENAI_HOST = normalized.slice(0, -v1Suffix.length) || normalized;
+        next.OPENAI_BASE_PATH = "v1/chat/completions";
+      } else {
+        next.OPENAI_HOST = normalized;
+        next.OPENAI_BASE_PATH = "v1/chat/completions";
+      }
+    }
+    const apiKey = stringValue(env.AI_GATE_API_KEY);
+    if (apiKey) next.OPENAI_API_KEY = apiKey;
+  }
   if (!next.GOOSE_MODE) next.GOOSE_MODE = "auto";
   if (!next.GOOSE_DISABLE_SESSION_NAMING) next.GOOSE_DISABLE_SESSION_NAMING = "true";
   if (runtime.maxTurns && !next.GOOSE_MAX_TURNS) next.GOOSE_MAX_TURNS = String(runtime.maxTurns);
   return next;
 }
 
-export async function createAiGateProviderAsset(input: {
-  runtime: GooseRuntimeConfig;
-}): Promise<{ localDir: string; providerName: string } | null> {
-  if (input.runtime.providerName !== "ai-gate" || !input.runtime.aiGateBaseUrl) return null;
-  if (input.runtime.aiGateModels.length === 0) return null;
+function safeExtensionName(value: string, index: number): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `paperclip-${normalized || `mcp-${index + 1}`}`.slice(0, 80);
+}
 
+export async function createGooseRuntimeAsset(input: {
+  mcpServers: GooseRuntimeMcpServer[];
+}): Promise<{ localDir: string; mcpCount: number } | null> {
+  if (input.mcpServers.length === 0) return null;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-provider-"));
-  const providerDir = path.join(root, "config", "custom_providers");
-  await fs.mkdir(providerDir, { recursive: true });
-  const provider = {
-    name: input.runtime.providerName,
-    engine: "openai",
-    display_name: "AI Gate",
-    description: "Paperclip-provided AI Gate catalog",
-    api_key_env: "AI_GATE_API_KEY",
-    base_url: input.runtime.aiGateBaseUrl,
-    models: input.runtime.aiGateModels.map((name) => ({ name, context_limit: 200000 })),
-    supports_streaming: true,
-    requires_auth: true,
-  };
+  const configDir = path.join(root, "config");
+  await fs.mkdir(configDir, { recursive: true });
+  const extensions: Record<string, unknown> = {};
+  for (const [index, server] of input.mcpServers.entries()) {
+    const extensionName = safeExtensionName(server.name || server.connectionId, index);
+    extensions[extensionName] = {
+      type: "streamable_http",
+      name: extensionName,
+      enabled: true,
+      uri: server.url,
+      headers: {
+        Authorization: `Bearer ${server.token}`,
+      },
+      env_keys: [],
+      envs: {},
+      timeout: 300,
+    };
+  }
+  // JSON is valid YAML and avoids adding a YAML dependency to the adapter.
+  // Goose reads this as config.yaml, while secrets remain confined to the
+  // per-run staged runtime root and never enter prompts or logs.
   await fs.writeFile(
-    path.join(providerDir, `${input.runtime.providerName}.json`),
-    `${JSON.stringify(provider, null, 2)}\n`,
+    path.join(configDir, "config.yaml"),
+    `${JSON.stringify({ extensions }, null, 2)}\n`,
     "utf8",
   );
-  return { localDir: root, providerName: input.runtime.providerName };
+  return { localDir: root, mcpCount: input.mcpServers.length };
 }
