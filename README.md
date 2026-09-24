@@ -90,7 +90,7 @@ process runs on the SSH worker.
 Set the Paperclip agent model to the main Goose model, for example:
 
 ```text
-ai-gate/gpt-5.6-sol
+ai-gate/gpt-6-sol
 ```
 
 When `adapterConfig.model` is omitted, the adapter defaults to:
@@ -101,7 +101,7 @@ Goose subagents:  gpt-6-luna
 ```
 
 An explicit Paperclip model always wins. For example,
-`ai-gate/gpt-5.6-terra` becomes the main Goose model while the default
+`ai-gate/gpt-5.6-terra` remains available as an explicit main Goose model while the default
 subagent model remains `gpt-6-luna` unless `GOOSE_SUBAGENT_MODEL` is set.
 
 Configure these values in the agent environment editor. Secret values should be
