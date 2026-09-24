@@ -20,6 +20,10 @@ export interface GooseRuntimeConfig {
   maxTurns: number | null;
 }
 
+const DEFAULT_PROVIDER = "ai-gate";
+const DEFAULT_MAIN_MODEL = "gpt-6-sol";
+const DEFAULT_SUBAGENT_MODEL = "gpt-6-luna";
+
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -32,7 +36,7 @@ function firstNonEmpty(...values: unknown[]): string {
   return "";
 }
 
-export function splitQualifiedModel(value: unknown, fallbackProvider = "ai-gate"): GooseModelSelection {
+export function splitQualifiedModel(value: unknown, fallbackProvider = DEFAULT_PROVIDER): GooseModelSelection {
   const raw = stringValue(value);
   const slash = raw.indexOf("/");
   if (slash > 0 && slash < raw.length - 1) {
@@ -40,11 +44,11 @@ export function splitQualifiedModel(value: unknown, fallbackProvider = "ai-gate"
     const model = raw.slice(slash + 1).trim();
     return { provider, model, qualifiedModel: `${provider}/${model}` };
   }
-  const model = raw || "gpt-5.6-luna";
+  const model = raw || DEFAULT_MAIN_MODEL;
   return {
-    provider: fallbackProvider || "ai-gate",
+    provider: fallbackProvider || DEFAULT_PROVIDER,
     model,
-    qualifiedModel: `${fallbackProvider || "ai-gate"}/${model}`,
+    qualifiedModel: `${fallbackProvider || DEFAULT_PROVIDER}/${model}`,
   };
 }
 
@@ -77,12 +81,16 @@ export function resolveGooseRuntimeConfig(
     : {};
   const configuredModel = firstNonEmpty(config.model, env.GOOSE_MODEL);
   const envProvider = firstNonEmpty(config.gooseProvider, env.GOOSE_PROVIDER);
-  const main = splitQualifiedModel(configuredModel, envProvider || "ai-gate");
+  const main = splitQualifiedModel(configuredModel, envProvider || DEFAULT_PROVIDER);
 
   const configuredSubagentProvider = firstNonEmpty(config.subagentProvider, env.GOOSE_SUBAGENT_PROVIDER);
-  const configuredSubagentModel = firstNonEmpty(config.subagentModel, env.GOOSE_SUBAGENT_MODEL);
+  const configuredSubagentModel = firstNonEmpty(
+    config.subagentModel,
+    env.GOOSE_SUBAGENT_MODEL,
+    DEFAULT_SUBAGENT_MODEL,
+  );
   const subagent = configuredSubagentModel
-    ? splitQualifiedModel(configuredSubagentModel, configuredSubagentProvider || main.provider)
+    ? splitQualifiedModel(configuredSubagentModel, configuredSubagentProvider || DEFAULT_PROVIDER)
     : null;
 
   const catalogModels = unique([
@@ -99,9 +107,9 @@ export function resolveGooseRuntimeConfig(
   return {
     provider: main.provider,
     model: main.model,
-    subagentProvider: subagent?.provider ?? (configuredSubagentProvider || null),
+    subagentProvider: subagent?.provider ?? DEFAULT_PROVIDER,
     subagentModel: subagent?.model ?? (configuredSubagentModel || null),
-    providerName: firstNonEmpty(config.aiGateProviderName, env.AI_GATE_PROVIDER_NAME) || "ai-gate",
+    providerName: firstNonEmpty(config.aiGateProviderName, env.AI_GATE_PROVIDER_NAME) || DEFAULT_PROVIDER,
     aiGateBaseUrl: firstNonEmpty(config.aiGateBaseUrl, env.AI_GATE_BASE_URL) || null,
     aiGateModels: catalogModels,
     persistSession: config.persistSession === true || stringValue(env.GOOSE_PERSIST_SESSION).toLowerCase() === "true",

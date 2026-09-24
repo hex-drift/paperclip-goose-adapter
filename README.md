@@ -7,19 +7,63 @@ Paperclip core is not modified.
 ## Build
 
 ```bash
-pnpm install
-pnpm build
+npm install
+npm run build
 ```
 
 ## Install into Paperclip
 
-Install the package from the Adapter Manager, or add this to the instance's
-adapter plugin store:
+### Option A: install from npm
+
+After publishing the package, use **Settings → Adapters → Install from npm**
+and enter:
+
+```text
+paperclip-goose-adapter
+```
+
+The adapter reports itself as `grok_local`, so installing it intentionally
+overrides the built-in Grok adapter type. Existing `opencode_local` agents are
+unchanged. Restart Paperclip if the UI does not refresh the adapter list.
+
+The same operation can be performed through the admin API:
+
+```bash
+curl -fsS -X POST "$PAPERCLIP_API_URL/api/adapters/install" \
+  -H "Authorization: Bearer $PAPERCLIP_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"packageName":"paperclip-goose-adapter"}'
+```
+
+### Option B: install from a local checkout
+
+```bash
+git clone https://github.com/hex-drift/paperclip-goose-adapter.git
+cd paperclip-goose-adapter
+npm install
+npm run build
+```
+
+Install the absolute checkout path from **Settings → Adapters → Install from
+local path**, or use:
+
+```bash
+curl -fsS -X POST "$PAPERCLIP_API_URL/api/adapters/install" \
+  -H "Authorization: Bearer $PAPERCLIP_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data "{\"packageName\":\"$(pwd)\",\"isLocalPath\":true}"
+```
+
+The Paperclip server must be able to read the path. If Paperclip runs in a
+container, mount the checkout into the server container and use the mounted
+path, not the host path.
+
+For development, the instance plugin store entry is:
 
 ```json
 [
   {
-    "packageName": "paperclip-goose-grok-adapter",
+    "packageName": "paperclip-goose-adapter",
     "localPath": "/absolute/path/to/paperclip-goose-adapter",
     "type": "grok_local",
     "installedAt": "2026-09-24T00:00:00.000Z"
@@ -49,15 +93,26 @@ Set the Paperclip agent model to the main Goose model, for example:
 ai-gate/gpt-5.6-sol
 ```
 
+When `adapterConfig.model` is omitted, the adapter defaults to:
+
+```text
+Goose main model: gpt-6-sol
+Goose subagents:  gpt-6-luna
+```
+
+An explicit Paperclip model always wins. For example,
+`ai-gate/gpt-5.6-terra` becomes the main Goose model while the default
+subagent model remains `gpt-6-luna` unless `GOOSE_SUBAGENT_MODEL` is set.
+
 Configure these values in the agent environment editor. Secret values should be
 Paperclip secret bindings, not plain text:
 
 ```text
 AI_GATE_API_KEY=<Paperclip secret binding>
 AI_GATE_BASE_URL=https://your-ai-gate.example/v1/chat/completions
-AI_GATE_MODELS=gpt-5.6-sol,gpt-5.6-luna,gpt-5.6-terra
+AI_GATE_MODELS=gpt-6-sol,gpt-6-luna,gpt-5.6-terra
 GOOSE_SUBAGENT_PROVIDER=ai-gate
-GOOSE_SUBAGENT_MODEL=gpt-5.6-luna
+GOOSE_SUBAGENT_MODEL=gpt-6-luna
 ```
 
 `AI_GATE_MODELS` also accepts a JSON string array. When `AI_GATE_BASE_URL` and
@@ -74,9 +129,9 @@ configuration.
 The Paperclip `model` selects the main Goose orchestration model:
 
 ```text
-Paperclip model: ai-gate/gpt-5.6-sol
-Goose main model: gpt-5.6-sol
-Goose subagents: gpt-5.6-luna
+Paperclip model: ai-gate/gpt-6-sol
+Goose main model: gpt-6-sol
+Goose subagents: gpt-6-luna
 ```
 
 The adapter forwards `GOOSE_SUBAGENT_PROVIDER` and `GOOSE_SUBAGENT_MODEL` to

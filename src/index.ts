@@ -9,7 +9,8 @@ import { createServerAdapter } from "./server/index.js";
 export const type = "grok_local";
 export const label = "Goose (grok_local override)";
 export const DEFAULT_GOOSE_PROVIDER = "ai-gate";
-export const DEFAULT_GOOSE_MODEL = "ai-gate/gpt-5.6-luna";
+export const DEFAULT_GOOSE_MODEL = "ai-gate/gpt-6-sol";
+export const DEFAULT_GOOSE_SUBAGENT_MODEL = "gpt-6-luna";
 
 export const agentConfigurationDoc = `# Goose over SSH (grok_local override)
 
