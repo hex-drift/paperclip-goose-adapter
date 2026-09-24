@@ -1,0 +1,31 @@
+{
+  "name": "paperclip-goose-adapter",
+  "version": "0.1.0",
+  "description": "External Paperclip adapter override that runs Goose over SSH under the grok_local adapter type",
+  "license": "MIT",
+  "type": "module",
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./ui-parser": "./dist/ui-parser.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "2026.916.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

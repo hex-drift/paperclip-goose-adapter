@@ -1,0 +1,276 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  overrideAdapterExecutionTargetRemoteCwd,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCommandForLogs,
+  resolveAdapterExecutionTargetTimeoutSec,
+  runAdapterExecutionTargetProcess,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
+  asNumber,
+  asString,
+  buildInvocationEnvForLogs,
+  buildPaperclipEnv,
+  ensureAbsoluteDirectory,
+  ensurePathInEnv,
+  joinPromptSections,
+  parseObject,
+  readPaperclipIssueWorkModeFromContext,
+  renderPaperclipWakePrompt,
+  renderTemplate,
+  refreshPaperclipWorkspaceEnvForExecution,
+  stringifyPaperclipWakePayload,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+} from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_GOOSE_MODEL } from "../index.js";
+import { applyGooseEnvironment, createAiGateProviderAsset, resolveGooseRuntimeConfig } from "./config.js";
+import { parseGooseStreamJson } from "./parse.js";
+
+function firstNonEmptyLine(text: string): string {
+  return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+}
+
+function requireSshTarget(ctx: AdapterExecutionContext) {
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (!target || target.kind !== "remote" || target.transport !== "ssh") {
+    throw new Error("The Goose grok_local override requires a Paperclip SSH execution environment.");
+  }
+  return target;
+}
+
+function addContextEnvironment(
+  env: Record<string, string>,
+  context: Record<string, unknown>,
+): void {
+  const taskId = typeof context.taskId === "string" && context.taskId.trim()
+    ? context.taskId.trim()
+    : typeof context.issueId === "string" && context.issueId.trim()
+      ? context.issueId.trim()
+      : "";
+  const wakeReason = typeof context.wakeReason === "string" ? context.wakeReason.trim() : "";
+  const commentId = typeof context.commentId === "string" && context.commentId.trim()
+    ? context.commentId.trim()
+    : typeof context.wakeCommentId === "string" && context.wakeCommentId.trim()
+      ? context.wakeCommentId.trim()
+      : "";
+  if (taskId) env.PAPERCLIP_TASK_ID = taskId;
+  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
+  if (commentId) env.PAPERCLIP_WAKE_COMMENT_ID = commentId;
+  const approvalId = typeof context.approvalId === "string" ? context.approvalId.trim() : "";
+  const approvalStatus = typeof context.approvalStatus === "string" ? context.approvalStatus.trim() : "";
+  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
+  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
+  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+  const wakePayload = stringifyPaperclipWakePayload(context.paperclipWake);
+  if (wakePayload) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayload;
+}
+
+function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean): string {
+  const config = ctx.config;
+  const context = ctx.context;
+  const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const data = {
+    agentId: ctx.agent.id,
+    companyId: ctx.agent.companyId,
+    runId: ctx.runId,
+    agent: ctx.agent,
+    run: { id: ctx.runId, source: "on_demand" },
+    context,
+  };
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+  const handoff = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  return joinPromptSections([
+    wakePrompt,
+    handoff,
+    renderTemplate(template, data),
+    Object.keys(env).some((key) => key.startsWith("PAPERCLIP_"))
+      ? `Paperclip runtime variables are available in the environment: ${Object.keys(env).filter((key) => key.startsWith("PAPERCLIP_")).sort().join(", ")}.`
+      : "",
+  ]);
+}
+
+export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const target = requireSshTarget(ctx);
+  const { agent, config, context, onLog, onMeta, onSpawn, authToken, runId } = ctx;
+  const runtimeConfig = resolveGooseRuntimeConfig({
+    ...config,
+    model: asString(config.model, DEFAULT_GOOSE_MODEL) || DEFAULT_GOOSE_MODEL,
+  });
+  const command = asString(config.command, "goose") || "goose";
+  const workspace = parseObject(context.paperclipWorkspace);
+  const workspaceSource = asString(workspace.source, "");
+  const workspaceId = asString(workspace.workspaceId, "");
+  const workspaceRepoUrl = asString(workspace.repoUrl, "");
+  const workspaceRepoRef = asString(workspace.repoRef, "");
+  const agentHome = asString(workspace.agentHome, "");
+  const configuredCwd = asString(config.cwd, "");
+  const cwd = asString(workspace.cwd, "") || configuredCwd || process.cwd();
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  const envConfig = parseObject(config.env);
+  let env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.PAPERCLIP_RUN_ID = runId;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  addContextEnvironment(env, context);
+  refreshPaperclipWorkspaceEnvForExecution({
+    env,
+    envConfig,
+    workspaceCwd: asString(workspace.cwd, ""),
+    workspaceSource,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceHints: Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [],
+    agentHome,
+    executionTargetIsRemote: true,
+    executionCwd: adapterExecutionTargetRemoteCwd(target, cwd),
+  });
+  env = applyGooseEnvironment(env, runtimeConfig);
+
+  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(target, asNumber(config.timeoutSec, 0));
+  const graceSec = asNumber(config.graceSec, 20);
+  const runtimeEnv = Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, { timeoutSec });
+  const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, target, cwd, runtimeEnv);
+
+  const providerAsset = await createAiGateProviderAsset({ runtime: runtimeConfig });
+  let localProviderRoot: string | null = providerAsset?.localDir ?? null;
+  let restoreWorkspace: (() => Promise<void>) | null = null;
+  try {
+    const assets = providerAsset
+      ? [{ key: "goosePathRoot", localDir: providerAsset.localDir }]
+      : [];
+    await onLog(
+      "stdout",
+      `[paperclip] Staging workspace for Goose on ${describeAdapterExecutionTarget(target)}.\n`,
+    );
+    const prepared = await prepareAdapterExecutionTargetRuntime({
+      runId,
+      target,
+      adapterKey: "goose",
+      timeoutSec,
+      workspaceLocalDir: cwd,
+      detectCommand: command,
+      installCommand: null,
+      onProgress: (line) => onLog("stdout", line),
+      onRuntimeProgress: ctx.onRuntimeProgress,
+      assets,
+    });
+    restoreWorkspace = () => prepared.restoreWorkspace((line) => onLog("stdout", line));
+    const effectiveCwd = prepared.workspaceRemoteDir ?? target.remoteCwd;
+    const runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(target, effectiveCwd) ?? target;
+    if (prepared.assetDirs.goosePathRoot) env.GOOSE_PATH_ROOT = prepared.assetDirs.goosePathRoot;
+
+    const runtimeSessionParams = parseObject(ctx.runtime.sessionParams);
+    const savedSession = typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId.trim() : "";
+    const persistSession = runtimeConfig.persistSession && !providerAsset;
+    const sessionId = persistSession ? savedSession || `paperclip-${agent.id}` : "";
+    const prompt = buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId));
+    const args = ["run", "--output-format", "stream-json"];
+    if (!persistSession) args.push("--no-session");
+    if (sessionId) args.push("--name", sessionId, "--resume");
+    if (runtimeConfig.maxTurns) args.push("--max-turns", String(runtimeConfig.maxTurns));
+    const extraArgs = Array.isArray(config.extraArgs)
+      ? config.extraArgs.filter((value): value is string => typeof value === "string")
+      : [];
+    args.push(...extraArgs, "-i", "-");
+
+    const loggedEnv = buildInvocationEnvForLogs(env, {
+      runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand,
+    });
+    await onMeta?.({
+      adapterType: "grok_local",
+      command: resolvedCommand,
+      cwd: effectiveCwd,
+      commandNotes: [
+        "External grok_local override: runs Goose over SSH.",
+        `Goose main model: ${runtimeConfig.provider}/${runtimeConfig.model}`,
+        runtimeConfig.subagentModel
+          ? `Goose subagent model: ${runtimeConfig.subagentProvider ?? runtimeConfig.provider}/${runtimeConfig.subagentModel}`
+          : "Goose subagent model comes from the remote Goose configuration.",
+        providerAsset ? `Staged AI Gate provider catalog with ${runtimeConfig.aiGateModels.length} model(s).` : "Using the remote Goose provider configuration.",
+      ],
+      commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
+      env: loggedEnv,
+      prompt,
+      promptMetrics: { promptChars: prompt.length },
+      context,
+    });
+
+    const proc = await runAdapterExecutionTargetProcess(runId, runtimeTarget, command, args, {
+      cwd,
+      env,
+      stdin: prompt,
+      timeoutSec,
+      graceSec,
+      onLog,
+      onSpawn,
+      onRuntimeProgress: ctx.onRuntimeProgress,
+    });
+    const parsed = parseGooseStreamJson(proc.stdout);
+    const errorMessage = parsed.errorMessage || firstNonEmptyLine(proc.stderr) || null;
+    const failed = proc.timedOut || (proc.exitCode ?? 0) !== 0 || Boolean(parsed.errorMessage);
+    return {
+      exitCode: failed && (proc.exitCode ?? 0) === 0 ? 1 : proc.exitCode,
+      signal: proc.signal,
+      timedOut: proc.timedOut,
+      errorMessage: proc.timedOut ? `Timed out after ${timeoutSec}s` : failed ? errorMessage || "Goose run failed" : null,
+      usage: {
+        inputTokens: parsed.inputTokens,
+        outputTokens: parsed.outputTokens,
+        cachedInputTokens: parsed.cachedInputTokens,
+      },
+      usageBasis: "per_run",
+      provider: runtimeConfig.provider,
+      model: runtimeConfig.model,
+      billingType: "unknown",
+      costUsd: parsed.costUsd,
+      sessionId: sessionId || parsed.sessionId,
+      sessionDisplayId: sessionId || parsed.sessionId,
+      sessionParams: sessionId || parsed.sessionId
+        ? {
+            sessionId: sessionId || parsed.sessionId,
+            cwd: effectiveCwd,
+            remoteExecution: adapterExecutionTargetSessionIdentity(runtimeTarget),
+          }
+        : null,
+      resultJson: {
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        gooseProvider: runtimeConfig.provider,
+        gooseModel: runtimeConfig.model,
+        gooseSubagentProvider: runtimeConfig.subagentProvider,
+        gooseSubagentModel: runtimeConfig.subagentModel,
+      },
+      summary: parsed.summary || null,
+      clearSession: Boolean(sessionId && failed),
+    };
+  } finally {
+    await Promise.allSettled([
+      restoreWorkspace?.(),
+      localProviderRoot ? fs.rm(localProviderRoot, { recursive: true, force: true }) : Promise.resolve(),
+    ]);
+  }
+}
