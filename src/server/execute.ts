@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -13,6 +14,7 @@ import {
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
+  runAdapterExecutionTargetShellCommand,
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -30,6 +32,9 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  isPaperclipSkillSourceMissing,
+  readPaperclipRuntimeSkillEntries,
+  resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GOOSE_MODEL } from "../index.js";
 import {
@@ -40,6 +45,8 @@ import {
   resolveGooseRuntimeConfig,
 } from "./config.js";
 import { parseGooseStreamJson } from "./parse.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function firstNonEmptyLine(text: string): string {
   return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
@@ -108,6 +115,28 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
   ]);
 }
 
+async function createGooseSkillsAsset(config: Record<string, unknown>): Promise<string | null> {
+  const entries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desired = new Set(resolveLegacyPaperclipDesiredSkillNames(config, entries));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-skills-"));
+  const skillsDir = path.join(root, "skills");
+  await fs.mkdir(skillsDir, { recursive: true });
+  let copied = 0;
+  for (const entry of entries) {
+    if (!desired.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
+    await fs.cp(entry.source, path.join(skillsDir, entry.runtimeName), {
+      recursive: true,
+      dereference: true,
+    });
+    copied += 1;
+  }
+  if (copied === 0) {
+    await fs.rm(root, { recursive: true, force: true });
+    return null;
+  }
+  return root;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const target = requireSshTarget(ctx);
   const { agent, config, context, onLog, onMeta, onSpawn, authToken, runId } = ctx;
@@ -164,11 +193,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ctx.runtimeMcp?.getServers() ?? [],
   );
   const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
+  const skillsAsset = await createGooseSkillsAsset(config);
   const instructionsAsset = await createGooseInstructionsAsset({
     instructionsRootPath: asString(config.instructionsRootPath, ""),
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
+  let localSkillsRoot: string | null = skillsAsset;
   let localInstructionsRoot: string | null = instructionsAsset?.localDir ?? null;
   let restoreWorkspace: (() => Promise<void>) | null = null;
   try {
@@ -177,6 +208,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : [];
     if (instructionsAsset) {
       assets.push({ key: "gooseInstructions", localDir: instructionsAsset.localDir });
+    }
+    if (skillsAsset) {
+      assets.push({ key: "gooseSkills", localDir: skillsAsset });
     }
     await onLog(
       "stdout",
@@ -201,6 +235,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsPath = prepared.assetDirs.gooseInstructions
       ? path.posix.join(prepared.assetDirs.gooseInstructions, instructionsAsset!.entryFile)
       : null;
+    if (prepared.assetDirs.gooseSkills) {
+      const remoteHome = asString(env.HOME, "/paperclip");
+      const remoteSkills = path.posix.join(remoteHome, ".claude", "skills");
+      await runAdapterExecutionTargetShellCommand(
+        runId,
+        runtimeTarget,
+        `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkills))} && rm -rf ${JSON.stringify(remoteSkills)} && cp -a ${JSON.stringify(prepared.assetDirs.gooseSkills)} ${JSON.stringify(remoteSkills)}`,
+        {
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onLog,
+        },
+      );
+    }
     const instructionsText = instructionsPath
       ? await fs.readFile(instructionsPath, "utf8").catch(() => "")
       : "";
@@ -254,6 +304,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         instructionsPath
           ? `Injected Paperclip instructions bundle into Goose: ${instructionsAsset!.entryFile}.`
           : "No Paperclip instructions bundle was attached to this run.",
+        prepared.assetDirs.gooseSkills
+          ? "Injected selected Paperclip skills into the remote Goose home.":
+          "No Paperclip skills were attached to this run.",
       ],
       commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
       env: loggedEnv,
@@ -314,6 +367,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await Promise.allSettled([
       restoreWorkspace?.(),
       localProviderRoot ? fs.rm(localProviderRoot, { recursive: true, force: true }) : Promise.resolve(),
+      localSkillsRoot ? fs.rm(localSkillsRoot, { recursive: true, force: true }) : Promise.resolve(),
       localInstructionsRoot ? fs.rm(localInstructionsRoot, { recursive: true, force: true }) : Promise.resolve(),
     ]);
   }
