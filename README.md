@@ -143,7 +143,44 @@ Goose. Goose recipes or custom agents can override those defaults when needed.
 
 ## Session behavior
 
-The default is one-shot `goose run --no-session`, which is the safest mode while
-the provider catalog is staged per run. Set `persistSession` in adapter config
-only when Goose session storage is already persistent on the SSH worker and no
-per-run staged provider root is being used.
+Runs use a fresh native Goose recipe and `--no-session`. Persistent sessions are
+not resumed because the recipe, credentials and asset paths belong to one run.
+
+## Native recipe runtime (Goose 1.52)
+
+The adapter invokes:
+
+```sh
+goose run --recipe /per-run/paperclip-motor.yaml --no-session \
+  --output-format stream-json --params task=/per-run/task.md
+```
+
+The explicit recipe extension list contains the `developer` platform extension
+and the run's MCP connections. Do **not** add `--no-profile`: in Goose 1.52 that
+flag also discards extensions declared by a recipe. `--text` and `--instructions`
+conflict with `--recipe`. Task text uses a file parameter inside a YAML block so
+quotes, newlines and literal template syntax in the task remain data.
+
+Selected skills are staged under a company-qualified, run-local directory. The
+adapter exports `PAPERCLIP_SKILLS_ROOT`, `PAPERCLIP_INSTRUCTIONS_PATH`, and a fresh
+`PAPERCLIP_RUN_SCRATCH_DIR`. When the assigned MIA toolkit exists, `MIA` and `LIB`
+point directly to its script and directory. Its staged legacy path resolvers use
+the run-local skill root while retaining their company and ambiguity checks;
+the original skills and SQL guards are unchanged. A `mia.py --help` preflight
+checks imports before starting the LLM. Shared worker skill directories are not
+replaced. The recipe does not enable extension discovery or subagent delegation;
+the subagent environment settings only take effect if delegation is enabled.
+
+## Verification
+
+```sh
+npm run typecheck
+npm test
+# Also validate and render tricky task inputs with the installed Goose binary:
+GOOSE_TEST_BINARY=/path/to/goose npm test
+```
+
+For performance comparisons, measure both run duration and time to the final
+issue comment with the same model, question and date. Require actual guarded
+data reads and a reconciled answer; a fast `succeeded` run with no tools is not a
+successful benchmark.
