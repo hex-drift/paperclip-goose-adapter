@@ -74,23 +74,44 @@ def pages(chunks):
 def render(args):
     manifest_path = Path(args.manifest or os.environ["PAPERCLIP_INSTRUCTION_MANIFEST"])
     manifest, docs, texts = load(manifest_path)
-    if args.command == "index":
-        selected = [docs[args.doc]] if args.doc else list(docs.values())
-        chunks = [f"{d['id']} sha256:{d['sha256']} bytes={d['bytes']}\n" + "\n".join(
-            f"  {s['id']}: {s['title']} lines={s['start']}-{s['end']}" for s in d["sections"]) + "\n" for d in selected]
+    bundle = manifest.get("bundles", {}).get(args.bundle) if args.bundle else None
+    if args.bundle and bundle is None:
+        raise ValueError("Unknown instruction bundle")
+    if args.bundle and (args.command != "read" or args.select):
+        raise ValueError("Bundle requires read without --select")
+    if bundle:
+        result = []
+        for page in bundle["pages"]:
+            file = (manifest_path.resolve().parent / page["file"]).resolve(strict=True)
+            if not file.is_relative_to(manifest_path.resolve().parent):
+                raise ValueError("Bundle page escapes manifest root")
+            raw = file.read_bytes()
+            if digest(raw) != page["sha256"] or len(raw) != page["bytes"]:
+                raise ValueError("Bundle checksum changed")
+            result.append(raw.decode())
+        selection = digest("".join(result).encode())
+        if selection != bundle["sha256"]:
+            raise ValueError("Bundle selection changed")
     else:
-        chunks = selection_chunks(args.select, docs, texts)
-    result = pages(chunks)
+        if args.command == "index":
+            selected = [docs[args.doc]] if args.doc else list(docs.values())
+            chunks = [f"{d['id']} sha256:{d['sha256']} bytes={d['bytes']}\n" + "\n".join(
+                f"  {s['id']}: {s['title']} lines={s['start']}-{s['end']}" for s in d["sections"]) + "\n" for d in selected]
+        else:
+            chunks = selection_chunks(args.select, docs, texts)
+        result = pages(chunks)
+        selection = digest("".join(chunks).encode())
     if not 1 <= args.page <= len(result):
         raise ValueError("Page out of range")
     content = result[args.page - 1]
-    selection = digest("".join(chunks).encode())
     if args.expect and args.expect != selection:
         raise ValueError("Instruction selection changed between pages")
     next_page = None
     if args.page < len(result):
         next_page = f'python3 "$PAPERCLIP_INSTRUCTION_READER" {args.command}'
-        if args.command == "read":
+        if bundle:
+            next_page += " --bundle " + args.bundle
+        elif args.command == "read":
             next_page += " --select " + " ".join(args.select)
         elif args.doc:
             next_page += " --doc " + args.doc
@@ -113,12 +134,13 @@ def main():
     parser.add_argument("command", choices=["index", "read"])
     parser.add_argument("--manifest")
     parser.add_argument("--doc")
+    parser.add_argument("--bundle")
     parser.add_argument("--select", nargs="+", default=[])
     parser.add_argument("--page", type=int, default=1)
     parser.add_argument("--expect")
     args = parser.parse_args()
-    if args.command == "read" and not args.select:
-        parser.error("read requires --select")
+    if args.command == "read" and not (args.select or args.bundle):
+        parser.error("read requires --select or --bundle")
     print(render(args), end="")
 
 

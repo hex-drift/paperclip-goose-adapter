@@ -57,12 +57,28 @@ export function bonusSelectors(docs: Array<{ id: string; sections: Array<{ id: n
   return selected;
 }
 
+export function instructionPages(text: string) {
+  const pages: string[] = [];
+  let chars: string[] = [], bytes = 0, lines = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > 36_000 || (char === "\n" && lines >= 1_200)) {
+      pages.push(chars.join(""));
+      chars = []; bytes = 0; lines = 0;
+    }
+    chars.push(char); bytes += size; lines += Number(char === "\n");
+  }
+  if (chars.length || !pages.length) pages.push(chars.join(""));
+  return pages;
+}
+
 /** A content-addressed per-run snapshot; no LLM summaries or policy rewriting. */
 export async function createInstructionContext(documents: InstructionDocument[]) {
   const localDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-context-"));
   try {
     await fs.copyFile(fileURLToPath(new URL("../../scripts/read-instructions.py", import.meta.url)), path.join(localDir, "read-instructions.py"));
-    const docs = [];
+    const docs: Array<{ id: string; file: string; sha256: string; bytes: number; loaded: boolean; sections: ReturnType<typeof instructionSections> }> = [];
+    const texts = new Map<string, string[]>();
     const preloaded = [];
     const ids = new Set<string>();
     let preloadedBytes = 0;
@@ -70,6 +86,7 @@ export async function createInstructionContext(documents: InstructionDocument[])
       if (!/^[\w-]+$/.test(input.id) || ids.has(input.id)) throw new Error("Invalid or duplicate instruction ID");
       ids.add(input.id);
       const text = await fs.readFile(input.file, "utf8");
+      texts.set(input.id, text ? text.split(/(?<=\n)/) : []);
       const sha256 = createHash("sha256").update(text).digest("hex");
       const file = `${input.id}.md`;
       await fs.writeFile(path.join(localDir, file), text, { mode: 0o600 });
@@ -81,12 +98,30 @@ export async function createInstructionContext(documents: InstructionDocument[])
       docs.push({ id: input.id, file, sha256, bytes: Buffer.byteLength(text), loaded,
         sections: instructionSections(text) });
     }
-    const manifest = { version: 1, documents: docs };
+    const bonus = bonusSelectors(docs);
+    const bundles: Record<string, { selectors: string[]; sha256: string; pages: Array<{ file: string; sha256: string; bytes: number }> }> = {};
+    if (bonus) {
+      const content = bonus.flatMap(selector => {
+        const [id, sectionIds] = selector.split(":");
+        const wanted = new Set(sectionIds.split(",").map(Number));
+        const doc = docs.find(d => d.id === id)!;
+        return doc.sections.filter(s => wanted.has(s.id)).map(s =>
+          `\nDOCUMENT ${id} sha256:${doc.sha256} SECTION ${s.id} ${s.title} lines=${s.start}-${s.end}\n`
+          + texts.get(id)!.slice(s.start - 1, s.end).join(""));
+      }).join("");
+      const pages = [];
+      for (const [index, body] of instructionPages(content).entries()) {
+        const file = `bonus-${index + 1}.txt`;
+        await fs.writeFile(path.join(localDir, file), body, { mode: 0o600 });
+        pages.push({ file, sha256: createHash("sha256").update(body).digest("hex"), bytes: Buffer.byteLength(body) });
+      }
+      bundles.bonus = { selectors: bonus, sha256: createHash("sha256").update(content).digest("hex"), pages };
+    }
+    const manifest = { version: 1, documents: docs, bundles };
     const digest = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
     await fs.writeFile(path.join(localDir, "manifest.json"), JSON.stringify({ ...manifest, digest }), { mode: 0o600 });
     const index = docs.map(doc => `- ${doc.id}${doc.loaded ? " [already loaded in full]" : ""}: `
       + doc.sections.map(s => `${s.id}=${s.title}`).join("; ")).join("\n");
-    const bonus = bonusSelectors(docs);
     const instructions = [
       `## Assigned instruction index v1 / ${digest}`,
       "The entry documents marked loaded below are complete verbatim snapshots; apply them without rereading them. The other documents are indexed, NOT yet read.",
@@ -96,7 +131,8 @@ export async function createInstructionContext(documents: InstructionDocument[])
       "Once page 1 reports the page count and selection hash, request ALL remaining pages as separate parallel shell calls (same selection, --page N --expect HASH). Every page must have both markers. Do not concatenate multiple pages into one shell output.",
       ...(bonus ? [
         "For a one-day Motor bonus-count/program-breakdown question, start with this complete section selection. It retains full identity/conversation/analysis rules and the relevant reporting, metrics and catalog sections; it omits only known off-topic deposits/GGR/VIP/geography/Slack-chart examples. New headings are included by default. Use the other sections when the question requires them. Entry/MAIN rules remain authoritative.",
-        `python3 "$PAPERCLIP_INSTRUCTION_READER" read --select ${bonus.join(" ")}`,
+        `All ${bundles.bonus.pages.length} pages are known now. Request them as SEPARATE PARALLEL shell tool calls in the same model turn, then verify every BEGIN/END marker. Do not wait for page 1 to discover the others:`,
+        ...bundles.bonus.pages.map((_, i) => `python3 "$PAPERCLIP_INSTRUCTION_READER" read --bundle bonus --page ${i + 1} --expect ${bundles.bonus.sha256}`),
         "Do not additionally load mia3-lib or presentation implementation tutorials when using the already-validated daily helper and returned answer_helper; consult those documents if their operation fails or the output request goes beyond this procedure.",
       ] : []),
       'For a larger index use `python3 "$PAPERCLIP_INSTRUCTION_READER" index --doc DOC`. Files and original rules remain available; a changed source fails the checksum instead of silently using stale instructions.',
