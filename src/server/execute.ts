@@ -40,6 +40,7 @@ import {
 } from "./config.js";
 import { parseGooseStreamJson } from "./parse.js";
 import { buildGooseRecipeArgs, createGooseSkillsAsset } from "./runtime-assets.js";
+import { createInstructionContext, type InstructionDocument } from "./instruction-context.js";
 
 function firstNonEmptyLine(text: string): string {
   return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
@@ -84,7 +85,7 @@ function addContextEnvironment(
   if (wakePayload) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayload;
 }
 
-function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false): string {
+function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false, indexed = false): string {
   const config = ctx.config;
   const context = ctx.context;
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -103,7 +104,9 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         "## Motor data execution directive",
         "",
         "This task asks for Motor production data. Do not investigate Paperclip OpenAPI, connections, or generic runtime tools first.",
-        preloaded
+        indexed
+          ? 'Use the assigned instruction index in the system context. Entry documents marked loaded need no reread. Read the required skills or relevant complete sections via `python3 "$PAPERCLIP_INSTRUCTION_READER" read --select DOC[:SECTIONS] ...` and follow next_page until complete. Never use a bulk cat of all skills: Goose truncates shell output beyond 50 KB. `$MIA` and `$LIB` are already resolved.'
+          : preloaded
           ? "AGENTS.md, MAIN.md and the six core analytical skills are already in the system context. Start with profile/context/schema checks, not cat/rg of those same documents. `$MIA` is the resolved toolkit and `$LIB` its scripts directory."
           : "Read `$PAPERCLIP_INSTRUCTIONS_PATH` and its sibling MAIN.md, then use the staged company-scoped toolkit at `$MIA`; `$LIB` is its scripts directory.",
         "The runtime has resolved these paths from the assigned skill manifest. Do not rediscover them with find/readlink or use a different company's toolkit.",
@@ -116,10 +119,7 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         'For a one-day question about how many bonuses were issued and which programs/types: after reading required instructions, run `python3 "$MIA_BONUS_DAILY" --date YYYY-MM-DD` with the requested UTC date. This procedure validates live schemas and executes four reads THROUGH the assigned mia.py guards and cumulative query budget; it returns per-program/type counts, independent totals, test/missing-join checks, unawarded records, ledger and freshness. No figures are cached. Use this existing procedure instead of reinventing equivalent SQL. If all_checks_pass is false or the question has a different scope, inspect evidence and do the necessary additional guarded checks before answering. Keep all normal instructions, reply/visualization and limitations requirements.',
         'The daily procedure also builds a table with the assigned mia-data-presentation builder and runs its validator. If visual.status is validated, the table is ready: write your verified final analysis to the run scratch reply file and call the returned visual.answer_helper with that file. Do not regenerate an already validated artifact or inspect builder source unless validation failed or the requested output differs. If unavailable, retain the normal Markdown-table fallback.',
         "Reduce model round trips, not verification: batch any outstanding context/schema reads in one shell call; execute independent guarded reads sequentially in one call when their inputs are already known. Do not reprint files already loaded in context. Keep all required brand, metric, freshness and reconciliation checks.",
-        ...(preloaded ? [] : [
-          "Suggested first read (all assigned instructions remain authoritative):",
-          '```sh\ncat "$PAPERCLIP_INSTRUCTIONS_PATH" "$(dirname "$PAPERCLIP_INSTRUCTIONS_PATH")/MAIN.md"\nfor slug in mia3-identity mia3-conversation mia3-report mia3-analysis mia3-metrics mia3-catalog-motor; do for dir in "$PAPERCLIP_SKILLS_ROOT"/"$slug"--*; do cat "$dir/SKILL.md"; done; done\n```',
-        ]),
+        ...(!preloaded && !indexed ? ["Read required files individually using bounded sections; do not concatenate all instructions and skills into a single shell result."] : []),
         "Use the supplied Motor catalog's ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
         "Use the catalog's brand filters, query the requested date in UTC, verify the result, and answer the user. Use the supplied read-only toolkit; if it refuses a query or access fails, report the actual blocker rather than bypassing the guard.",
         "",
@@ -198,6 +198,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
   });
   const preload = env.BRAND_SLUG === "motor" && config.preloadInstructions === true && instructionsAsset && skillsAsset;
+  let instructionContext: Awaited<ReturnType<typeof createInstructionContext>> | null = null;
+  if (!preload && instructionsAsset) {
+    const documents: InstructionDocument[] = [{ id: "agent-entry", file: path.join(instructionsAsset.localDir, instructionsAsset.entryFile), preload: true }];
+    const mainFile = path.join(instructionsAsset.localDir, "MAIN.md");
+    if (instructionsAsset.entryFile !== "MAIN.md" && await fs.stat(mainFile).then(s => s.isFile()).catch(() => false)) {
+      documents.push({ id: "agent-main", file: mainFile, preload: true });
+    }
+    for (const entry of skillsAsset?.entries ?? []) {
+      documents.push({ id: entry.runtimeName, file: path.join(skillsAsset!.localDir, skillsAsset!.relativeDir, entry.runtimeName, "SKILL.md") });
+    }
+    instructionContext = await createInstructionContext(documents);
+  }
   const instructionSections: string[] = [];
   if (preload) {
     for (const file of [...new Set([instructionsAsset.entryFile, "MAIN.md"])]) {
@@ -210,12 +222,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
-  const instructions = instructionSections.join("\n\n")
+  const instructions = (instructionContext?.instructions ?? instructionSections.join("\n\n"))
     .replaceAll("/paperclip/.claude/skills", "${PAPERCLIP_SKILLS_ROOT}");
-  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload));
+  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload), Boolean(instructionContext));
   const recipeAsset = await createGooseRecipeAsset({
     mcpServers: runtimeMcpServers, provider: runtimeConfig.provider, model: runtimeConfig.model,
-    maxTurns: runtimeConfig.maxTurns, prompt, instructions,
+    maxTurns: runtimeConfig.maxTurns, prompt, instructions, instructionIndex: Boolean(instructionContext),
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let localRecipeRoot: string | null = recipeAsset.localDir;
@@ -227,6 +239,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? [{ key: "goosePathRoot", localDir: runtimeAsset.localDir }]
       : [];
     assets.push({ key: "gooseRecipe", localDir: recipeAsset.localDir });
+    if (instructionContext) assets.push({ key: "instructionContext", localDir: instructionContext.localDir });
     if (instructionsAsset) {
       assets.push({ key: "gooseInstructions", localDir: instructionsAsset.localDir });
     }
@@ -259,6 +272,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!prepared.assetDirs.gooseRecipe) throw new Error("Goose recipe was not staged");
     const recipePath = path.posix.join(prepared.assetDirs.gooseRecipe, "paperclip-motor.yaml");
     if (instructionsPath) env.PAPERCLIP_INSTRUCTIONS_PATH = instructionsPath;
+    if (instructionContext) {
+      const root = prepared.assetDirs.instructionContext;
+      if (!root) throw new Error("Instruction context was not staged");
+      env.PAPERCLIP_INSTRUCTION_READER = path.posix.join(root, "read-instructions.py");
+      env.PAPERCLIP_INSTRUCTION_MANIFEST = path.posix.join(root, "manifest.json");
+    }
     if (prepared.assetDirs.gooseSkills && skillsAsset) {
       env.PAPERCLIP_SKILLS_ROOT = path.posix.join(prepared.assetDirs.gooseSkills, skillsAsset.relativeDir);
       const toolkit = skillsAsset.entries.find((entry) => entry.key === `company/${agent.companyId}/mia3-lib`);
@@ -317,7 +336,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: args,
       env: loggedEnv,
       prompt,
-      promptMetrics: { promptChars: prompt.length, instructionsChars: instructions.length },
+      promptMetrics: { promptChars: prompt.length, instructionsChars: instructions.length,
+        instructionDocuments: instructionContext?.documentCount ?? 0, preloadedBytes: instructionContext?.preloadedBytes ?? 0 },
       context,
     });
 
@@ -369,6 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       localRecipeRoot ? fs.rm(localRecipeRoot, { recursive: true, force: true }) : Promise.resolve(),
       localSkillsRoot ? fs.rm(localSkillsRoot, { recursive: true, force: true }) : Promise.resolve(),
       localInstructionsRoot ? fs.rm(localInstructionsRoot, { recursive: true, force: true }) : Promise.resolve(),
+      instructionContext ? fs.rm(instructionContext.localDir, { recursive: true, force: true }) : Promise.resolve(),
     ]);
   }
 }

@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "scripts/motor-bonus-daily.py"
+    "scripts/motor-bonus-daily.py",
+    "scripts/read-instructions.py"
   ],
   "scripts": {
     "build": "tsc",
