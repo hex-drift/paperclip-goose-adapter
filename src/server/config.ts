@@ -178,6 +178,60 @@ export function mergeGooseRuntimeMcpServers(
   ];
 }
 
+function recipeExtensionName(value: string, index: number): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || `paperclip-mcp-${index + 1}`;
+}
+
+function recipeHeaders(server: GooseRuntimeMcpServer): Record<string, string> {
+  return server.headers ?? (server.token ? { Authorization: `Bearer ${server.token}` } : {});
+}
+
+export async function createGooseRecipeAsset(input: {
+  mcpServers: GooseRuntimeMcpServer[];
+  provider: string;
+  model: string;
+  maxTurns: number | null;
+}): Promise<{ localDir: string; recipeFile: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-recipe-"));
+  const recipeFile = path.join(root, "paperclip-motor.yaml");
+  const recipe = {
+    version: "1.0.0",
+    title: "Paperclip Motor automation",
+    description: "Headless Paperclip Motor workflow with explicit extensions.",
+    instructions: [
+      "You are running a headless Paperclip automation. Never ask the user whether to continue.",
+      "For Motor data, use PAPERCLIP_SKILLS_ROOT and the staged mia3 toolkit directly.",
+      "Do not investigate Paperclip OpenAPI or generic connections before doing the requested work.",
+      "Use read-only queries, verify the result, answer the task, and record the required Paperclip disposition.",
+    ].join("\n"),
+    extensions: [
+      {
+        type: "builtin",
+        name: "developer",
+        bundled: true,
+        description: "Headless shell and file tools.",
+      },
+      ...input.mcpServers.map((server, index) => ({
+        type: "streamable_http",
+        name: recipeExtensionName(server.name || server.connectionId, index),
+        uri: server.url,
+        headers: recipeHeaders(server),
+        env_keys: [],
+        envs: {},
+        timeout: 300,
+      })),
+    ],
+    settings: {
+      goose_provider: input.provider === "ai-gate" ? "openai" : input.provider,
+      goose_model: input.model,
+      ...(input.maxTurns ? { max_turns: input.maxTurns } : {}),
+    },
+  };
+  await fs.writeFile(recipeFile, `${JSON.stringify(recipe, null, 2)}\n`, "utf8");
+  return { localDir: root, recipeFile };
+}
+
 export function resolveGooseRuntimeConfig(
   config: Record<string, unknown>,
 ): GooseRuntimeConfig {

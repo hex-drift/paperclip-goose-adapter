@@ -39,6 +39,7 @@ import {
 import { DEFAULT_GOOSE_MODEL } from "../index.js";
 import {
   applyGooseEnvironment,
+  createGooseRecipeAsset,
   createGooseRuntimeAsset,
   createGooseInstructionsAsset,
   mergeGooseRuntimeMcpServers,
@@ -206,12 +207,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ctx.runtimeMcp?.getServers() ?? [],
   );
   const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
+  const recipeAsset = await createGooseRecipeAsset({
+    mcpServers: runtimeMcpServers,
+    provider: runtimeConfig.provider,
+    model: runtimeConfig.model,
+    maxTurns: runtimeConfig.maxTurns,
+  });
   const skillsAsset = await createGooseSkillsAsset(config);
   const instructionsAsset = await createGooseInstructionsAsset({
     instructionsRootPath: asString(config.instructionsRootPath, ""),
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
+  let localRecipeRoot: string | null = recipeAsset.localDir;
   let localSkillsRoot: string | null = skillsAsset;
   let localInstructionsRoot: string | null = instructionsAsset?.localDir ?? null;
   let restoreWorkspace: (() => Promise<void>) | null = null;
@@ -219,6 +227,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const assets = runtimeAsset
       ? [{ key: "goosePathRoot", localDir: runtimeAsset.localDir }]
       : [];
+    assets.push({ key: "gooseRecipe", localDir: recipeAsset.localDir });
     if (instructionsAsset) {
       assets.push({ key: "gooseInstructions", localDir: instructionsAsset.localDir });
     }
@@ -247,6 +256,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (prepared.assetDirs.goosePathRoot) env.GOOSE_PATH_ROOT = prepared.assetDirs.goosePathRoot;
     const instructionsPath = prepared.assetDirs.gooseInstructions
       ? path.posix.join(prepared.assetDirs.gooseInstructions, instructionsAsset!.entryFile)
+      : null;
+    const recipePath = prepared.assetDirs.gooseRecipe
+      ? path.posix.join(prepared.assetDirs.gooseRecipe, "paperclip-motor.yaml")
       : null;
     if (prepared.assetDirs.gooseSkills) {
       const remoteHome = asString(env.HOME, "/paperclip");
@@ -278,7 +290,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : "",
       buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId)),
     ]);
-    const args = ["run", "--output-format", "stream-json"];
+    const args = ["run", "--output-format", "stream-json", "--no-profile"];
+    if (recipePath) args.push("--recipe", recipePath);
     if (!persistSession) args.push("--no-session");
     if (sessionId) args.push("--name", sessionId, "--resume");
     if (runtimeConfig.maxTurns) args.push("--max-turns", String(runtimeConfig.maxTurns));
@@ -314,6 +327,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prepared.assetDirs.gooseSkills
           ? "Injected selected Paperclip skills into the remote Goose home.":
           "No Paperclip skills were attached to this run.",
+        recipePath
+          ? "Using native Goose recipe with explicit headless extensions."
+          : "No native Goose recipe was attached to this run.",
       ],
       commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
       env: loggedEnv,
@@ -374,6 +390,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await Promise.allSettled([
       restoreWorkspace?.(),
       localProviderRoot ? fs.rm(localProviderRoot, { recursive: true, force: true }) : Promise.resolve(),
+      localRecipeRoot ? fs.rm(localRecipeRoot, { recursive: true, force: true }) : Promise.resolve(),
       localSkillsRoot ? fs.rm(localSkillsRoot, { recursive: true, force: true }) : Promise.resolve(),
       localInstructionsRoot ? fs.rm(localInstructionsRoot, { recursive: true, force: true }) : Promise.resolve(),
     ]);
