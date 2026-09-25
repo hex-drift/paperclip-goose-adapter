@@ -200,7 +200,6 @@ export async function createGooseRecipeAsset(input: {
     version: "1.0.0",
     title: "Paperclip automation",
     description: "Headless Paperclip workflow with explicit extensions.",
-    prompt: "{{ task }}",
     parameters: [{ key: "task", input_type: "file", requirement: "required", description: "Run-scoped task prompt" }],
     instructions: [
       "You are running a headless Paperclip automation. Complete the supplied task using its assigned instructions and tools.",
@@ -232,7 +231,11 @@ export async function createGooseRecipeAsset(input: {
       ...(input.maxTurns ? { max_turns: input.maxTurns } : {}),
     },
   };
-  await fs.writeFile(recipeFile, `${JSON.stringify(recipe, null, 2)}\n`, { mode: 0o600 });
+  // Substitute arbitrary task text into a YAML block, not a quoted JSON value:
+  // embedded quotes/newlines in a real task must not break the recipe parser.
+  const yaml = Object.entries(recipe).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")
+    + "\nprompt: |\n  {{ task | indent(2) }}\n";
+  await fs.writeFile(recipeFile, yaml, { mode: 0o600 });
   await fs.writeFile(path.join(root, "task.md"), input.prompt, { mode: 0o600 });
   return { localDir: root, recipeFile };
 }

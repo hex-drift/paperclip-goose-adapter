@@ -9,17 +9,29 @@ import { createGooseSkillsAsset, buildGooseRecipeArgs } from "../dist/server/run
 import { parseGooseStreamJson } from "../dist/server/parse.js";
 
 test("recipe keeps task data in a file parameter and includes authenticated MCP", async () => {
-  const prompt = 'Literal {{ user_text }} and {% not_a_template %}\nсколько бонусов?';
+  const prompt = 'Literal {{ user_text }} and {% not_a_template %}\n"quoted task"\nсколько бонусов?\n---\nextensions: []';
   const asset = await createGooseRecipeAsset({ provider: "ai-gate", model: "gpt-6-sol", maxTurns: 32,
     prompt, mcpServers: [{ name: "Paperclip projects", connectionId: "project", url: "https://example.test/mcp", token: "test-token" }] });
   try {
-    const recipe = JSON.parse(await fs.readFile(asset.recipeFile, "utf8"));
-    assert.equal(recipe.prompt, "{{ task }}");
+    const source = await fs.readFile(asset.recipeFile, "utf8");
+    const recipe = Object.fromEntries(source.split("\n").filter(line => /^\w+: /.test(line) && !line.startsWith("prompt:")).map(line => {
+      const colon = line.indexOf(": "); return [line.slice(0,colon), JSON.parse(line.slice(colon+2))];
+    }));
+    assert.ok(source.includes("prompt: |\n  {{ task | indent(2) }}"));
     assert.equal(recipe.parameters[0].input_type, "file");
     assert.equal(await fs.readFile(path.join(asset.localDir, "task.md"), "utf8"), prompt);
     assert.deepEqual(recipe.extensions.map(e => e.type), ["platform", "streamable_http"]);
     assert.equal(recipe.extensions[1].headers.Authorization, "Bearer test-token");
     assert.equal((await fs.stat(asset.recipeFile)).mode & 0o777, 0o600);
+    if (process.env.GOOSE_TEST_BINARY) {
+      const binary = process.env.GOOSE_TEST_BINARY;
+      execFileSync(binary, ["recipe", "validate", asset.recipeFile], { stdio: "pipe" });
+      const rendered = execFileSync(binary, ["run", "--recipe", asset.recipeFile, "--params", `task=${asset.localDir}/task.md`, "--render-recipe"], { encoding: "utf8" });
+      assert.ok(rendered.includes('"quoted task"'));
+      assert.ok(rendered.includes("{{ user_text }}"));
+      assert.ok(rendered.includes("{% not_a_template %}"));
+      assert.ok(rendered.includes("type: platform"));
+    }
     const args = buildGooseRecipeArgs("/remote/recipe.yaml", 32);
     for (const forbidden of ["--no-profile", "--text", "--instructions", "-i", "-t"]) {
       assert.ok(!args.includes(forbidden));
