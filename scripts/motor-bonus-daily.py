@@ -65,6 +65,37 @@ def parse_rows(output):
     return rows
 
 
+def make_visual(report, programs, skills, cid):
+    matches = [p for p in skills.glob("mia-data-presentation--*") if cid in p.resolve().parts]
+    if len(matches) != 1:
+        return {"status": "unavailable", "fallback": "Use a Markdown table"}
+    scripts = matches[0] / "scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        from build_visual import Visual, text, integer  # type: ignore[import-not-found]  # assigned runtime skill
+        start = dt.date.fromisoformat(report["date"])
+        labels = {"16": "Фриспины", "10": "Казино-бонусы с отыгрышем"}
+        visual = Visual(f"Выдачи бонусов Motor за {start}", time_zone="UTC",
+                        period=(f"{start}T00:00:00Z", f"{start + dt.timedelta(days=1)}T00:00:00Z"),
+                        as_of=report["coverage"]["checked_at"].replace(" ", "T") + "Z")
+        rows = [{"kind": labels.get(code, f"Тип {code}"), "assignments": value["assignments"],
+                 "programs": value["programs"]} for code, value in report["by_type"].items()]
+        visual.dataset("types", [text("kind", "Вид бонуса"), integer("assignments", "Выдач"),
+                                 integer("programs", "Программ")], rows)
+        visual.table("types-table", "types", ["kind", "assignments", "programs"], title="По видам")
+        visual.dataset("programs", [text("name", "Программа"), integer("assignments", "Выдач")],
+                       [{"name": r["bonus_name"], "assignments": int(r["assignments"])} for r in programs])
+        visual.table("programs-table", "programs", ["name", "assignments"], title="Все программы", page_size=10)
+        visual.warn("Количество назначений, не отдельных вращений. Оперативные данные могут уточняться.")
+        artifact, digest = visual.publish()
+        return {"status": "validated", "artifact": artifact, "sha256": digest,
+                "answer_helper": str(scripts / "answer.sh")}
+    except Exception as error:
+        return {"status": "failed", "error_type": type(error).__name__, "fallback": "Use a Markdown table"}
+    finally:
+        sys.path.remove(str(scripts))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="One UTC date, YYYY-MM-DD")
@@ -131,6 +162,8 @@ def main():
               "all_checks_pass": all(checks.values()), "evidence_directory": str(out),
               "elapsed_seconds": round(time.monotonic() - started, 2),
               "limitations": "Live production snapshot may change; no settled Motor daily report. Ledger operations and bonus assignments are different measures; count equality alone is not row-level matching. Spin package value cannot be inferred from ledger amounts."}
+    if report["all_checks_pass"]:
+        report["visual"] = make_visual(report, results["by_program"], skills, cid)
     (out / "full-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps(report, ensure_ascii=False, indent=2))
