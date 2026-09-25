@@ -110,9 +110,9 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         "## Motor data execution directive",
         "",
         "This task asks for Motor production data. Do not investigate Paperclip OpenAPI, connections, or generic runtime tools first.",
-        "Immediately resolve the company-scoped MIA toolkit and use the data workflow from the staged instructions:",
-        "`MIA=$(readlink -f /paperclip/.claude/skills/mia3-lib*/scripts/mia.py | grep \"$PAPERCLIP_COMPANY_ID\")`.",
-        "Read the staged Motor catalog skill and use its ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
+        "Immediately use the staged company-scoped MIA toolkit; its root is in `$PAPERCLIP_SKILLS_ROOT`.",
+        "Resolve it with `MIA=$(readlink -f \"$PAPERCLIP_SKILLS_ROOT\"/mia3-lib*/scripts/mia.py | grep \"$PAPERCLIP_COMPANY_ID\")`.",
+        "Read the staged Motor catalog skill from `$PAPERCLIP_SKILLS_ROOT/mia3-catalog-motor-*` and use its ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
         "Use the Motor brand filter (PartnerId = 100 on chr_NextCode2/ai_analytics), query the requested date in UTC, verify the result, and answer the user. Do not stop at saying that data access is unavailable while CLICKHOUSE_HOST and CLICKHOUSE_PASSWORD are present.",
         "",
       ].join("\n")
@@ -264,23 +264,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       );
     }
-    const instructionsText = instructionsPath
-      ? await fs.readFile(instructionsPath, "utf8").catch(() => "")
-      : "";
+    if (prepared.assetDirs.gooseSkills) {
+      env.PAPERCLIP_SKILLS_ROOT = path.posix.join(prepared.assetDirs.gooseSkills, "skills");
+    }
 
     const runtimeSessionParams = parseObject(ctx.runtime.sessionParams);
     const savedSession = typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId.trim() : "";
     const persistSession = runtimeConfig.persistSession && !runtimeAsset;
     const sessionId = persistSession ? savedSession || `paperclip-${agent.id}` : "";
     const prompt = joinPromptSections([
-      instructionsText
-        ? [
-            "## Paperclip agent instructions",
-            "",
-            "The following instructions are loaded from the agent's Paperclip instructions bundle. Follow them for this run.",
-            "",
-            instructionsText,
-          ].join("\n")
+      instructionsPath
+        ? "The Paperclip instructions bundle and selected skills are staged in the runtime. Use the exact staged paths from PAPERCLIP_SKILLS_ROOT; do not search the filesystem or Paperclip API for them."
         : "",
       buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId)),
     ]);
