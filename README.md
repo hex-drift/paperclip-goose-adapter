@@ -171,6 +171,37 @@ checks imports before starting the LLM. Shared worker skill directories are not
 replaced. The recipe does not enable extension discovery or subagent delegation;
 the subagent environment settings only take effect if delegation is enabled.
 
+## Motor daily bonus fast path
+
+For Motor agents with the assigned MIA toolkit, `MIA_BONUS_DAILY` points to a
+one-day report procedure. Goose chooses the requested date and invokes:
+
+```sh
+python3 "$MIA_BONUS_DAILY" --date YYYY-MM-DD
+```
+
+The procedure checks current table schemas and uses the existing `mia.py sql`
+guards, credentials and cumulative run query budget. It reads current data on
+every invocation: no cached figures, direct credential client or disabled guard.
+Four statements cover the program breakdown, independent unique total, ledger,
+test accounts, missing joins, unawarded records and freshness. Failed checks are
+reported for further investigation rather than silently accepted. The ledger
+count comparison is not represented as row-level reconciliation.
+
+When the assigned presentation skill is available, the procedure calls its
+builder and validator to create a table of types and all programs. Goose writes
+the explanatory answer and uses the returned `answer_helper` to post it and link
+the artifact. Other questions continue using the general guarded toolkit.
+
+Full instruction preloading is opt-in (`preloadInstructions: true`); on the
+measured Motor task it increased latency, so the default remains file-based.
+
+On 2026-09-25, two runs of the same Motor question/date with `gpt-6-sol` and this
+fast path completed in 52.11s and 45.67s, with final comments at 47.44s and 39.01s.
+Both included validated, comment-linked tables and live reconciled reads. Prior
+corrected-runtime runs took 92.45s and 97.79s; the original benchmark took
+163.32s. This is a task-specific two-run observation, not a universal latency SLO.
+
 ## Verification
 
 ```sh
@@ -178,6 +209,7 @@ npm run typecheck
 npm test
 # Also validate and render tricky task inputs with the installed Goose binary:
 GOOSE_TEST_BINARY=/path/to/goose npm test
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 For performance comparisons, measure both run duration and time to the final
