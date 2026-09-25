@@ -105,7 +105,20 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
   };
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
   const handoff = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const motorDataDirective = env.CLICKHOUSE_HOST
+    ? [
+        "## Motor data execution directive",
+        "",
+        "This task asks for Motor production data. Do not investigate Paperclip OpenAPI, connections, or generic runtime tools first.",
+        "Immediately resolve the company-scoped MIA toolkit and use the data workflow from the staged instructions:",
+        "`MIA=$(readlink -f /paperclip/.claude/skills/mia3-lib*/scripts/mia.py | grep \"$PAPERCLIP_COMPANY_ID\")`.",
+        "Read the staged Motor catalog skill and use its ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
+        "Use the Motor brand filter (PartnerId = 100 on chr_NextCode2/ai_analytics), query the requested date in UTC, verify the result, and answer the user. Do not stop at saying that data access is unavailable while CLICKHOUSE_HOST and CLICKHOUSE_PASSWORD are present.",
+        "",
+      ].join("\n")
+    : "";
   return joinPromptSections([
+    motorDataDirective,
     wakePrompt,
     handoff,
     renderTemplate(template, data),
