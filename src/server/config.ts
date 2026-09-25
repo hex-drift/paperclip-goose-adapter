@@ -23,7 +23,8 @@ export interface GooseRuntimeConfig {
 export interface GooseRuntimeMcpServer {
   name: string;
   url: string;
-  token: string;
+  token?: string;
+  headers?: Record<string, string>;
   connectionId: string;
 }
 
@@ -78,6 +79,103 @@ function parseModelList(value: unknown): string[] {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function expandEnvPlaceholders(value: unknown, env: Record<string, string>): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+      stringValue(env[name]) || match,
+    );
+  }
+  if (Array.isArray(value)) return value.map((entry) => expandEnvPlaceholders(entry, env));
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, expandEnvPlaceholders(entry, env)]),
+    );
+  }
+  return value;
+}
+
+function readMcpHeaders(value: unknown, env: Record<string, string>): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const expanded = expandEnvPlaceholders(value, env);
+  if (!isRecord(expanded)) return {};
+  return Object.fromEntries(
+    Object.entries(expanded).flatMap(([key, entry]) =>
+      typeof entry === "string" && entry.trim() ? [[key, entry]] : [],
+    ),
+  );
+}
+
+function readOpenCodeMcpConfig(env: Record<string, string>): GooseRuntimeMcpServer[] {
+  const raw = stringValue(env.PAPERCLIP_OPENCODE_MCP);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed)) return [];
+  return Object.entries(parsed).flatMap(([name, rawConfig]) => {
+    if (!isRecord(rawConfig)) return [];
+    const config = expandEnvPlaceholders(rawConfig, env);
+    if (!isRecord(config)) return [];
+    const url = stringValue(config.url);
+    if (!url) return [];
+    const headers = readMcpHeaders(config.headers, env);
+    return [{
+      name,
+      url,
+      headers,
+      connectionId: `opencode:${name}`,
+    }];
+  });
+}
+
+function readBearerMcp(
+  env: Record<string, string>,
+  name: string,
+  tokenKey: string,
+  urlKey: string,
+  defaultUrl: string,
+): GooseRuntimeMcpServer[] {
+  const token = stringValue(env[tokenKey]);
+  if (!token) return [];
+  return [{
+    name,
+    url: stringValue(env[urlKey]) || defaultUrl,
+    token: token.replace(/^Bearer\s+/i, ""),
+    connectionId: `env:${tokenKey}`,
+  }];
+}
+
+export function mergeGooseRuntimeMcpServers(
+  env: Record<string, string>,
+  paperclipServers: GooseRuntimeMcpServer[],
+): GooseRuntimeMcpServer[] {
+  return [
+    ...paperclipServers,
+    ...readOpenCodeMcpConfig(env),
+    ...readBearerMcp(
+      env,
+      "hex-data-mcp",
+      "HEX_DATA_MCP_TOKEN",
+      "HEX_DATA_MCP_URL",
+      "https://hex-data-mcp.hexdrift-project.workers.dev/mcp",
+    ),
+    ...readBearerMcp(
+      env,
+      "hex-data-mcp-bq",
+      "HEX_DATA_MCP_BQ_TOKEN",
+      "HEX_DATA_MCP_BQ_URL",
+      "https://hex-data-mcp-bq.hexdrift-project.workers.dev/mcp",
+    ),
+  ];
 }
 
 export function resolveGooseRuntimeConfig(
@@ -183,9 +281,7 @@ export async function createGooseRuntimeAsset(input: {
       name: extensionName,
       enabled: true,
       uri: server.url,
-      headers: {
-        Authorization: `Bearer ${server.token}`,
-      },
+      headers: server.headers ?? (server.token ? { Authorization: `Bearer ${server.token}` } : {}),
       env_keys: [],
       envs: {},
       timeout: 300,

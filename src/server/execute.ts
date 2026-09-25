@@ -32,7 +32,12 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GOOSE_MODEL } from "../index.js";
-import { applyGooseEnvironment, createGooseRuntimeAsset, resolveGooseRuntimeConfig } from "./config.js";
+import {
+  applyGooseEnvironment,
+  createGooseRuntimeAsset,
+  mergeGooseRuntimeMcpServers,
+  resolveGooseRuntimeConfig,
+} from "./config.js";
 import { parseGooseStreamJson } from "./parse.js";
 
 function firstNonEmptyLine(text: string): string {
@@ -153,7 +158,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, { timeoutSec });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, target, cwd, runtimeEnv);
 
-  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const runtimeMcpServers = mergeGooseRuntimeMcpServers(
+    env,
+    ctx.runtimeMcp?.getServers() ?? [],
+  );
   const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let restoreWorkspace: (() => Promise<void>) | null = null;
