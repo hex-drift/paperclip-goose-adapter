@@ -5,7 +5,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { createInstructionContext, instructionSections } from "../dist/server/instruction-context.js";
+import { createInstructionContext, instructionSections, bonusSelectors } from "../dist/server/instruction-context.js";
 import { createGooseRecipeAsset } from "../dist/server/config.js";
 
 const sha = text => createHash("sha256").update(text).digest("hex");
@@ -30,6 +30,16 @@ test("heading index preserves the whole document and ignores fenced example head
   assert.deepEqual(sections.map(s => s.title), ["Preamble", "Root", "Same", "Same"]);
   const lines = text.split(/(?<=\n)/);
   assert.equal(sections.map(s => lines.slice(s.start - 1, s.end).join("")).join(""), text);
+});
+
+test("bonus section route retains new rules and fails closed on missing/ambiguous skills", () => {
+  const docs = ["mia3-identity", "mia3-conversation", "mia3-report", "mia3-analysis", "mia3-metrics", "mia3-catalog-motor"]
+    .map(id => ({ id: `${id}--abc`, sections: [{ id: 1, title: "Mandatory rules" }, { id: 2, title: "New owner restriction" }] }));
+  docs[2].sections.push({ id: 3, title: "Charts" });
+  assert.equal(bonusSelectors(docs)[2], "mia3-report--abc:1,2");
+  assert.ok(bonusSelectors(docs).every(selector => selector.endsWith(":1,2")));
+  assert.equal(bonusSelectors(docs.slice(1)), null);
+  assert.equal(bonusSelectors([...docs, docs[0]]), null);
 });
 
 test("bounded reader reconstructs Unicode/long-line documents, tracks completeness and detects changes", async () => {
