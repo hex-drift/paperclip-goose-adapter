@@ -298,7 +298,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const extraArgs = Array.isArray(config.extraArgs)
       ? config.extraArgs.filter((value): value is string => typeof value === "string")
       : [];
-    args.push(...extraArgs, "-i", "-");
+    args.push(...extraArgs);
+    if (recipePath) args.push("--text", prompt);
+    else args.push("-i", "-");
 
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
