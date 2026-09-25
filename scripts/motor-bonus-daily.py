@@ -76,7 +76,7 @@ def make_visual(report, programs, skills, cid):
         start = dt.date.fromisoformat(report["date"])
         labels = {"16": "Фриспины", "10": "Казино-бонусы с отыгрышем"}
         visual = Visual(f"Выдачи бонусов Motor за {start}", time_zone="UTC",
-                        period=(f"{start}T00:00:00Z", f"{start + dt.timedelta(days=1)}T00:00:00Z"),
+                        period=(str(start), str(start + dt.timedelta(days=1))),
                         as_of=report["coverage"]["checked_at"].replace(" ", "T") + "Z")
         rows = [{"kind": labels.get(code, f"Тип {code}"), "assignments": value["assignments"],
                  "programs": value["programs"]} for code, value in report["by_type"].items()]
