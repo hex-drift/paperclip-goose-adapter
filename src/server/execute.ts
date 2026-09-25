@@ -201,14 +201,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsPath = prepared.assetDirs.gooseInstructions
       ? path.posix.join(prepared.assetDirs.gooseInstructions, instructionsAsset!.entryFile)
       : null;
+    const instructionsText = instructionsPath
+      ? await fs.readFile(instructionsPath, "utf8").catch(() => "")
+      : "";
 
     const runtimeSessionParams = parseObject(ctx.runtime.sessionParams);
     const savedSession = typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId.trim() : "";
     const persistSession = runtimeConfig.persistSession && !runtimeAsset;
     const sessionId = persistSession ? savedSession || `paperclip-${agent.id}` : "";
-    const prompt = buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId));
+    const prompt = joinPromptSections([
+      instructionsText
+        ? [
+            "## Paperclip agent instructions",
+            "",
+            "The following instructions are loaded from the agent's Paperclip instructions bundle. Follow them for this run.",
+            "",
+            instructionsText,
+          ].join("\n")
+        : "",
+      buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId)),
+    ]);
     const args = ["run", "--output-format", "stream-json"];
-    if (instructionsPath) args.push("--instructions", instructionsPath);
     if (!persistSession) args.push("--no-session");
     if (sessionId) args.push("--name", sessionId, "--resume");
     if (runtimeConfig.maxTurns) args.push("--max-turns", String(runtimeConfig.maxTurns));
