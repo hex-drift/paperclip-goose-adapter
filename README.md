@@ -194,7 +194,9 @@ the explanatory answer and uses the returned `answer_helper` to post it and link
 the artifact. Other questions continue using the general guarded toolkit.
 
 Full instruction preloading is opt-in (`preloadInstructions: true`); on the
-measured Motor task it increased latency, so the default remains file-based.
+measured Motor task it increased latency. By default, only complete entry
+documents (AGENTS/MAIN, at most 32 KB total) and a versioned section index enter
+the recipe. Other assigned skill text is loaded using the bounded reader below.
 
 On 2026-09-25, two runs of the same Motor question/date with `gpt-6-sol` and this
 fast path completed in 52.11s and 45.67s, with final comments at 47.44s and 39.01s.
@@ -216,3 +218,37 @@ For performance comparisons, measure both run duration and time to the final
 issue comment with the same model, question and date. Require actual guarded
 data reads and a reconciled answer; a fast `succeeded` run with no tools is not a
 successful benchmark.
+
+## Bounded instruction delivery
+
+Goose 1.52's shell truncates output beyond 50,000 bytes or 2,000 lines to a tail
+preview. Do not concatenate the instruction bundle and all skills with `cat`.
+
+`PAPERCLIP_INSTRUCTION_READER` and `PAPERCLIP_INSTRUCTION_MANIFEST` point to a
+per-run snapshot of the assigned documents. The recipe lists document and section
+IDs and distinguishes fully preloaded entry documents from an unread index.
+
+```sh
+python3 "$PAPERCLIP_INSTRUCTION_READER" index --doc DOCUMENT_ID
+python3 "$PAPERCLIP_INSTRUCTION_READER" read --select DOCUMENT_ID:1,3,4
+```
+
+Responses have `BEGIN_PAGE`/`END_PAGE`, source and body SHA-256, source line ranges,
+selection byte offsets, `complete` and `next_page`. Bodies are limited to 36,000
+UTF-8 bytes and 1,200 newlines (including giant-line handling); the entire envelope
+is checked below Goose's limits. A checksum change, unknown section or bad page
+fails explicitly. Read every requested page; the last page alone does not prove
+the earlier pages were read.
+
+For daily Motor bonus tasks, the runtime precomputes a versioned bundle of full
+relevant sections and lists all page commands up front. Goose reads them as
+separate parallel tool calls. Identity, conversation and analysis rules are kept
+in full; only named off-topic report/metric/catalog sections are left for on-demand
+reading. New headings are included by default; missing or ambiguous skill matches
+disable this shortcut. Original documents and SQL/report procedures are unchanged.
+
+Validation on 2026-09-25: IGAAA-610/611 delivered all three pages with no truncation
+or repeated filesystem searches. From issue creation, final comments took
+50.74s/41.87s and complete runs took 55.02s/48.49s, versus IGAAA-607's 61.57s/68.70s.
+Both tests used gpt-6-sol, fresh guarded reads, matching counts and linked visual
+artifacts. These two observations are not a latency guarantee.
