@@ -297,3 +297,23 @@ export async function createGooseRuntimeAsset(input: {
   );
   return { localDir: root, mcpCount: input.mcpServers.length };
 }
+
+export async function createGooseInstructionsAsset(input: {
+  instructionsRootPath: string;
+  instructionsEntryFile?: string;
+}): Promise<{ localDir: string; entryFile: string } | null> {
+  const source = stringValue(input.instructionsRootPath);
+  if (!source) return null;
+  const stat = await fs.stat(source).catch(() => null);
+  if (!stat?.isDirectory()) return null;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-instructions-"));
+  await fs.cp(source, root, { recursive: true, dereference: false });
+  const requested = stringValue(input.instructionsEntryFile) || "AGENTS.md";
+  const entryFile = requested.startsWith("/") ? path.basename(requested) : requested;
+  const entryPath = path.join(root, entryFile);
+  if (!(await fs.stat(entryPath).catch(() => null))?.isFile()) {
+    await fs.rm(root, { recursive: true, force: true });
+    return null;
+  }
+  return { localDir: root, entryFile };
+}

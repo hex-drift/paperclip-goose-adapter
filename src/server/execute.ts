@@ -35,6 +35,7 @@ import { DEFAULT_GOOSE_MODEL } from "../index.js";
 import {
   applyGooseEnvironment,
   createGooseRuntimeAsset,
+  createGooseInstructionsAsset,
   mergeGooseRuntimeMcpServers,
   resolveGooseRuntimeConfig,
 } from "./config.js";
@@ -163,12 +164,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ctx.runtimeMcp?.getServers() ?? [],
   );
   const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
+  const instructionsAsset = await createGooseInstructionsAsset({
+    instructionsRootPath: asString(config.instructionsRootPath, ""),
+    instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
+  });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
+  let localInstructionsRoot: string | null = instructionsAsset?.localDir ?? null;
   let restoreWorkspace: (() => Promise<void>) | null = null;
   try {
     const assets = runtimeAsset
       ? [{ key: "goosePathRoot", localDir: runtimeAsset.localDir }]
       : [];
+    if (instructionsAsset) {
+      assets.push({ key: "gooseInstructions", localDir: instructionsAsset.localDir });
+    }
     await onLog(
       "stdout",
       `[paperclip] Staging workspace for Goose on ${describeAdapterExecutionTarget(target)}.\n`,
@@ -189,6 +198,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const effectiveCwd = prepared.workspaceRemoteDir ?? target.remoteCwd;
     const runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(target, effectiveCwd) ?? target;
     if (prepared.assetDirs.goosePathRoot) env.GOOSE_PATH_ROOT = prepared.assetDirs.goosePathRoot;
+    const instructionsPath = prepared.assetDirs.gooseInstructions
+      ? path.posix.join(prepared.assetDirs.gooseInstructions, instructionsAsset!.entryFile)
+      : null;
 
     const runtimeSessionParams = parseObject(ctx.runtime.sessionParams);
     const savedSession = typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId.trim() : "";
@@ -196,6 +208,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionId = persistSession ? savedSession || `paperclip-${agent.id}` : "";
     const prompt = buildPrompt({ ...ctx, config, context }, env, Boolean(sessionId));
     const args = ["run", "--output-format", "stream-json"];
+    if (instructionsPath) args.push("--instructions", instructionsPath);
     if (!persistSession) args.push("--no-session");
     if (sessionId) args.push("--name", sessionId, "--resume");
     if (runtimeConfig.maxTurns) args.push("--max-turns", String(runtimeConfig.maxTurns));
@@ -223,8 +236,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "Mapped AI Gate to Goose's built-in OpenAI-compatible provider."
           : "Using the configured Goose provider.",
         runtimeAsset
-          ? `Injected ${runtimeAsset.mcpCount} Paperclip runtime MCP server(s) into Goose streamable HTTP extensions.`
+          ? `Injected ${runtimeAsset.mcpCount} Paperclip/runtime MCP server(s) into Goose streamable HTTP extensions.`
           : "No Paperclip runtime MCP servers were attached to this run.",
+        instructionsPath
+          ? `Injected Paperclip instructions bundle into Goose: ${instructionsAsset!.entryFile}.`
+          : "No Paperclip instructions bundle was attached to this run.",
       ],
       commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
       env: loggedEnv,
@@ -285,6 +301,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await Promise.allSettled([
       restoreWorkspace?.(),
       localProviderRoot ? fs.rm(localProviderRoot, { recursive: true, force: true }) : Promise.resolve(),
+      localInstructionsRoot ? fs.rm(localInstructionsRoot, { recursive: true, force: true }) : Promise.resolve(),
     ]);
   }
 }
