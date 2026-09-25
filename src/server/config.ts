@@ -192,6 +192,7 @@ export async function createGooseRecipeAsset(input: {
   provider: string;
   model: string;
   maxTurns: number | null;
+  prompt: string;
 }): Promise<{ localDir: string; recipeFile: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-recipe-"));
   const recipeFile = path.join(root, "paperclip-motor.yaml");
@@ -199,6 +200,7 @@ export async function createGooseRecipeAsset(input: {
     version: "1.0.0",
     title: "Paperclip Motor automation",
     description: "Headless Paperclip Motor workflow with explicit extensions.",
+    prompt: input.prompt,
     instructions: [
       "You are running a headless Paperclip automation. Never ask the user whether to continue.",
       "For Motor data, use PAPERCLIP_SKILLS_ROOT and the staged mia3 toolkit directly.",

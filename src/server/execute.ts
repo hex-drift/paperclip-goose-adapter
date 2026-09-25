@@ -212,6 +212,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     provider: runtimeConfig.provider,
     model: runtimeConfig.model,
     maxTurns: runtimeConfig.maxTurns,
+    prompt: buildPrompt({ ...ctx, config, context }, env, false),
   });
   const skillsAsset = await createGooseSkillsAsset(config);
   const instructionsAsset = await createGooseInstructionsAsset({
@@ -299,8 +300,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? config.extraArgs.filter((value): value is string => typeof value === "string")
       : [];
     args.push(...extraArgs);
-    if (recipePath) args.push("--text", prompt);
-    else args.push("-i", "-");
+    if (!recipePath) args.push("-i", "-");
 
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
