@@ -198,18 +198,20 @@ export async function createGooseRecipeAsset(input: {
   const recipeFile = path.join(root, "paperclip-motor.yaml");
   const recipe = {
     version: "1.0.0",
-    title: "Paperclip Motor automation",
-    description: "Headless Paperclip Motor workflow with explicit extensions.",
-    prompt: input.prompt,
+    title: "Paperclip automation",
+    description: "Headless Paperclip workflow with explicit extensions.",
+    prompt: "{{ task }}",
+    parameters: [{ key: "task", input_type: "file", requirement: "required", description: "Run-scoped task prompt" }],
     instructions: [
-      "You are running a headless Paperclip automation. Never ask the user whether to continue.",
-      "For Motor data, use PAPERCLIP_SKILLS_ROOT and the staged mia3 toolkit directly.",
-      "Do not investigate Paperclip OpenAPI or generic connections before doing the requested work.",
-      "Use read-only queries, verify the result, answer the task, and record the required Paperclip disposition.",
+      "You are running a headless Paperclip automation. Complete the supplied task using its assigned instructions and tools.",
+      "Read PAPERCLIP_INSTRUCTIONS_PATH when set; relative instruction references resolve from its directory.",
+      "PAPERCLIP_SKILLS_ROOT contains only this run's assigned skills. Use the provided paths rather than global filesystem or API discovery.",
+      "Host paths /paperclip/.claude/skills in the copied instructions refer to PAPERCLIP_SKILLS_ROOT on this SSH worker.",
+      "Respect the task's company scope, data guards and approval requirements. Report genuine blockers truthfully.",
     ].join("\n"),
     extensions: [
       {
-        type: "builtin",
+        type: "platform",
         name: "developer",
         bundled: true,
         description: "Headless shell and file tools.",
@@ -230,7 +232,8 @@ export async function createGooseRecipeAsset(input: {
       ...(input.maxTurns ? { max_turns: input.maxTurns } : {}),
     },
   };
-  await fs.writeFile(recipeFile, `${JSON.stringify(recipe, null, 2)}\n`, "utf8");
+  await fs.writeFile(recipeFile, `${JSON.stringify(recipe, null, 2)}\n`, { mode: 0o600 });
+  await fs.writeFile(path.join(root, "task.md"), input.prompt, { mode: 0o600 });
   return { localDir: root, recipeFile };
 }
 

@@ -32,16 +32,22 @@ function contentText(value: unknown): string {
   if (Array.isArray(value)) {
     return value.map((entry) => {
       const item = record(entry);
-      return item ? firstString(item.text, item.content, item.output) : stringValue(entry);
+      return item ? rawText(item.text, item.content, item.output) : stringValue(entry);
     }).join("");
   }
   const item = record(value);
-  return item ? firstString(item.text, item.content, item.output, item.delta) : "";
+  return item ? rawText(item.text, item.content, item.output, item.delta) : "";
+}
+
+// Streaming chunks include leading spaces; trimming each one joins every word.
+function rawText(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === "string") ?? "";
 }
 
 function eventText(event: Record<string, unknown>, type: string): string {
   const message = record(event.message);
   const role = firstString(event.role, message?.role).toLowerCase();
+  if (role && role !== "assistant") return "";
   const assistantEvent = role === "assistant" || /assistant|message|text|response|result|final/i.test(type);
   if (!assistantEvent) return "";
   return contentText(
