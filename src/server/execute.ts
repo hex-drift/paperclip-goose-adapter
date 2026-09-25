@@ -208,7 +208,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
-  const instructions = instructionSections.join("\n\n");
+  const instructions = instructionSections.join("\n\n")
+    .replaceAll("/paperclip/.claude/skills", "${PAPERCLIP_SKILLS_ROOT}");
   const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload));
   const recipeAsset = await createGooseRecipeAsset({
     mcpServers: runtimeMcpServers, provider: runtimeConfig.provider, model: runtimeConfig.model,
