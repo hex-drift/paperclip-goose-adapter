@@ -84,7 +84,7 @@ function addContextEnvironment(
   if (wakePayload) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayload;
 }
 
-function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean): string {
+function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false): string {
   const config = ctx.config;
   const context = ctx.context;
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -103,7 +103,9 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         "## Motor data execution directive",
         "",
         "This task asks for Motor production data. Do not investigate Paperclip OpenAPI, connections, or generic runtime tools first.",
-        "Read `$PAPERCLIP_INSTRUCTIONS_PATH` and its sibling MAIN.md, then use the staged company-scoped toolkit at `$MIA`; `$LIB` is its scripts directory.",
+        preloaded
+          ? "AGENTS.md, MAIN.md and the six core analytical skills are already in the system context. Start with profile/context/schema checks, not cat/rg of those same documents. `$MIA` is the resolved toolkit and `$LIB` its scripts directory."
+          : "Read `$PAPERCLIP_INSTRUCTIONS_PATH` and its sibling MAIN.md, then use the staged company-scoped toolkit at `$MIA`; `$LIB` is its scripts directory.",
         "The runtime has resolved these paths from the assigned skill manifest. Do not rediscover them with find/readlink or use a different company's toolkit.",
         "Verified toolkit CLI (do not guess subcommands or call --help unless a command actually rejects this syntax):",
         '- `python3 "$MIA" profile` shows the brand and checks access. There is no `brand` or `identity` subcommand.',
@@ -111,10 +113,12 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         '- `python3 "$MIA" columns --table DATABASE.TABLE` returns the current schema.',
         '- `python3 "$MIA" sql --run-id "$PAPERCLIP_RUN_ID" --file "$PAPERCLIP_RUN_SCRATCH_DIR/query.sql"` executes one guarded read-only statement. A heredoc on stdin works too; keep the same run ID so the query budget stays cumulative.',
         '- `python3 "$MIA" memory list --limit 10`, `python3 "$MIA" say "progress"`, `sh "$LIB/thread.sh"`, and `sh "$LIB/reply.sh" "$PAPERCLIP_RUN_SCRATCH_DIR/mia-reply.md"` are the supported context/delivery commands.',
-        "Reduce model round trips, not verification: batch the initial instruction/MAIN/required-skill reads in one shell call; batch known-table schemas in the next; execute independent guarded reads sequentially in one call when their inputs are already known. Do not reprint files already read. Keep all required brand, metric, freshness and reconciliation checks.",
-        "Suggested first read (all assigned instructions remain authoritative):",
-        '```sh\ncat "$PAPERCLIP_INSTRUCTIONS_PATH" "$(dirname "$PAPERCLIP_INSTRUCTIONS_PATH")/MAIN.md"\nfor slug in mia3-identity mia3-conversation mia3-report mia3-analysis mia3-metrics mia3-catalog-motor; do for dir in "$PAPERCLIP_SKILLS_ROOT"/"$slug"--*; do cat "$dir/SKILL.md"; done; done\n```',
-        "Read the staged Motor catalog skill from `$PAPERCLIP_SKILLS_ROOT/mia3-catalog-motor-*` and use its ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
+        "Reduce model round trips, not verification: batch any outstanding context/schema reads in one shell call; execute independent guarded reads sequentially in one call when their inputs are already known. Do not reprint files already loaded in context. Keep all required brand, metric, freshness and reconciliation checks.",
+        ...(preloaded ? [] : [
+          "Suggested first read (all assigned instructions remain authoritative):",
+          '```sh\ncat "$PAPERCLIP_INSTRUCTIONS_PATH" "$(dirname "$PAPERCLIP_INSTRUCTIONS_PATH")/MAIN.md"\nfor slug in mia3-identity mia3-conversation mia3-report mia3-analysis mia3-metrics mia3-catalog-motor; do for dir in "$PAPERCLIP_SKILLS_ROOT"/"$slug"--*; do cat "$dir/SKILL.md"; done; done\n```',
+        ]),
+        "Use the supplied Motor catalog's ClickHouse schema/brand filter. If live query tools are not present, run the approved read-only fallback with `python3 \"$MIA\" sql`.",
         "Use the catalog's brand filters, query the requested date in UTC, verify the result, and answer the user. Use the supplied read-only toolkit; if it refuses a query or access fails, report the actual blocker rather than bypassing the guard.",
         "",
       ].join("\n")
@@ -186,18 +190,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ctx.runtimeMcp?.getServers() ?? [],
   );
   const runtimeAsset = await createGooseRuntimeAsset({ mcpServers: runtimeMcpServers });
-  const prompt = buildPrompt({ ...ctx, config, context }, env, false);
-  const recipeAsset = await createGooseRecipeAsset({
-    mcpServers: runtimeMcpServers,
-    provider: runtimeConfig.provider,
-    model: runtimeConfig.model,
-    maxTurns: runtimeConfig.maxTurns,
-    prompt,
-  });
   const skillsAsset = await createGooseSkillsAsset(config, agent.companyId);
   const instructionsAsset = await createGooseInstructionsAsset({
     instructionsRootPath: asString(config.instructionsRootPath, ""),
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
+  });
+  const preload = env.BRAND_SLUG === "motor" && config.preloadInstructions !== false && instructionsAsset && skillsAsset;
+  const instructionSections: string[] = [];
+  if (preload) {
+    for (const file of [...new Set([instructionsAsset.entryFile, "MAIN.md"])]) {
+      instructionSections.push(`## Assigned instructions: ${file}\n\n${await fs.readFile(path.join(instructionsAsset.localDir, file), "utf8")}`);
+    }
+    const slugs = new Set(["mia3-identity", "mia3-conversation", "mia3-report", "mia3-analysis", "mia3-metrics", "mia3-catalog-motor"]);
+    for (const entry of skillsAsset.entries) {
+      if (slugs.has(entry.key.split("/").at(-1)!)) {
+        instructionSections.push(`## Assigned skill: ${entry.runtimeName}\n\n${await fs.readFile(path.join(skillsAsset.localDir, skillsAsset.relativeDir, entry.runtimeName, "SKILL.md"), "utf8")}`);
+      }
+    }
+  }
+  const instructions = instructionSections.join("\n\n");
+  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload));
+  const recipeAsset = await createGooseRecipeAsset({
+    mcpServers: runtimeMcpServers, provider: runtimeConfig.provider, model: runtimeConfig.model,
+    maxTurns: runtimeConfig.maxTurns, prompt, instructions,
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let localRecipeRoot: string | null = recipeAsset.localDir;
@@ -262,6 +277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : [];
     const args = buildGooseRecipeArgs(recipePath, runtimeConfig.maxTurns, extraArgs);
     args.push("--params", `task=${path.posix.join(prepared.assetDirs.gooseRecipe, "task.md")}`);
+    if (instructions) args.push("--params", `agent_context=${path.posix.join(prepared.assetDirs.gooseRecipe, "instructions.md")}`);
 
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
@@ -297,7 +313,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: args,
       env: loggedEnv,
       prompt,
-      promptMetrics: { promptChars: prompt.length },
+      promptMetrics: { promptChars: prompt.length, instructionsChars: instructions.length },
       context,
     });
 

@@ -11,10 +11,11 @@ import { parseGooseStreamJson } from "../dist/server/parse.js";
 test("recipe keeps task data in a file parameter and includes authenticated MCP", async () => {
   const prompt = 'Literal {{ user_text }} and {% not_a_template %}\n"quoted task"\nсколько бонусов?\n---\nextensions: []';
   const asset = await createGooseRecipeAsset({ provider: "ai-gate", model: "gpt-6-sol", maxTurns: 32,
-    prompt, mcpServers: [{ name: "Paperclip projects", connectionId: "project", url: "https://example.test/mcp", token: "test-token" }] });
+    prompt, instructions: 'Full assigned policy\nKeep {{ literal }} and "quotes" unchanged.\nEnd of policy.',
+    mcpServers: [{ name: "Paperclip projects", connectionId: "project", url: "https://example.test/mcp", token: "test-token" }] });
   try {
     const source = await fs.readFile(asset.recipeFile, "utf8");
-    const recipe = Object.fromEntries(source.split("\n").filter(line => /^\w+: /.test(line) && !line.startsWith("prompt:")).map(line => {
+    const recipe = Object.fromEntries(source.split("\n").filter(line => /^\w+: /.test(line) && !/^(prompt|instructions):/.test(line)).map(line => {
       const colon = line.indexOf(": "); return [line.slice(0,colon), JSON.parse(line.slice(colon+2))];
     }));
     assert.ok(source.includes("prompt: |\n  {{ task | indent(2) }}"));
@@ -26,11 +27,13 @@ test("recipe keeps task data in a file parameter and includes authenticated MCP"
     if (process.env.GOOSE_TEST_BINARY) {
       const binary = process.env.GOOSE_TEST_BINARY;
       execFileSync(binary, ["recipe", "validate", asset.recipeFile], { stdio: "pipe" });
-      const rendered = execFileSync(binary, ["run", "--recipe", asset.recipeFile, "--params", `task=${asset.localDir}/task.md`, "--render-recipe"], { encoding: "utf8" });
+      const rendered = execFileSync(binary, ["run", "--recipe", asset.recipeFile, "--params", `task=${asset.localDir}/task.md`, "--params", `agent_context=${asset.localDir}/instructions.md`, "--render-recipe"], { encoding: "utf8" });
       assert.ok(rendered.includes('"quoted task"'));
       assert.ok(rendered.includes("{{ user_text }}"));
       assert.ok(rendered.includes("{% not_a_template %}"));
       assert.ok(rendered.includes("type: platform"));
+      assert.ok(rendered.includes('Keep {{ literal }} and "quotes" unchanged.'));
+      assert.ok(rendered.includes("End of policy."));
     }
     const args = buildGooseRecipeArgs("/remote/recipe.yaml", 32);
     for (const forbidden of ["--no-profile", "--text", "--instructions", "-i", "-t"]) {

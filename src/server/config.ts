@@ -193,6 +193,7 @@ export async function createGooseRecipeAsset(input: {
   model: string;
   maxTurns: number | null;
   prompt: string;
+  instructions?: string;
 }): Promise<{ localDir: string; recipeFile: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-recipe-"));
   const recipeFile = path.join(root, "paperclip-motor.yaml");
@@ -200,10 +201,15 @@ export async function createGooseRecipeAsset(input: {
     version: "1.0.0",
     title: "Paperclip automation",
     description: "Headless Paperclip workflow with explicit extensions.",
-    parameters: [{ key: "task", input_type: "file", requirement: "required", description: "Run-scoped task prompt" }],
+    parameters: [
+      { key: "task", input_type: "file", requirement: "required", description: "Run-scoped task prompt" },
+      ...(input.instructions ? [{ key: "agent_context", input_type: "file", requirement: "required", description: "Assigned instructions and skill documents" }] : []),
+    ],
     instructions: [
       "You are running a headless Paperclip automation. Complete the supplied task using its assigned instructions and tools.",
-      "Read PAPERCLIP_INSTRUCTIONS_PATH when set; relative instruction references resolve from its directory.",
+      input.instructions
+        ? "The complete assigned instruction entry, MAIN.md and core analytical skills are included below. They have already been loaded: apply them without rereading those files. Read referenced files not included here when needed."
+        : "Read PAPERCLIP_INSTRUCTIONS_PATH when set; relative instruction references resolve from its directory.",
       "PAPERCLIP_SKILLS_ROOT contains only this run's assigned skills. Use the provided paths rather than global filesystem or API discovery.",
       "Host paths /paperclip/.claude/skills in the copied instructions refer to PAPERCLIP_SKILLS_ROOT on this SSH worker.",
       "Respect the task's company scope, data guards and approval requirements. Report genuine blockers truthfully.",
@@ -233,10 +239,14 @@ export async function createGooseRecipeAsset(input: {
   };
   // Substitute arbitrary task text into a YAML block, not a quoted JSON value:
   // embedded quotes/newlines in a real task must not break the recipe parser.
-  const yaml = Object.entries(recipe).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")
-    + "\nprompt: |\n  {{ task | indent(2) }}\n";
+  const yaml = Object.entries(recipe).filter(([key]) => key !== "instructions")
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")
+    + `\ninstructions: |\n  ${recipe.instructions.replaceAll("\n", "\n  ")}\n`
+    + (input.instructions ? "  {{ agent_context | indent(2) }}\n" : "")
+    + "prompt: |\n  {{ task | indent(2) }}\n";
   await fs.writeFile(recipeFile, yaml, { mode: 0o600 });
   await fs.writeFile(path.join(root, "task.md"), input.prompt, { mode: 0o600 });
+  if (input.instructions) await fs.writeFile(path.join(root, "instructions.md"), input.instructions, { mode: 0o600 });
   return { localDir: root, recipeFile };
 }
 
