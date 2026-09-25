@@ -49,6 +49,7 @@ export async function createGooseSkillsAsset(config: Record<string, unknown>, co
         }
       }
     }
+    await fs.copyFile(path.resolve(moduleDir, "../../scripts/motor-bonus-daily.py"), path.join(root, "motor-bonus-daily.py"));
     return { localDir: root, relativeDir, entries: selected };
   } catch (error) {
     await fs.rm(root, { recursive: true, force: true });

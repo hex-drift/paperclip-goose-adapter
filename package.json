@@ -12,7 +12,8 @@
     "./ui-parser": "./dist/ui-parser.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/motor-bonus-daily.py"
   ],
   "scripts": {
     "build": "tsc",

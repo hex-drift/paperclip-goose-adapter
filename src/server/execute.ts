@@ -113,6 +113,7 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         '- `python3 "$MIA" columns --table DATABASE.TABLE` returns the current schema.',
         '- `python3 "$MIA" sql --run-id "$PAPERCLIP_RUN_ID" --file "$PAPERCLIP_RUN_SCRATCH_DIR/query.sql"` executes one guarded read-only statement. A heredoc on stdin works too; keep the same run ID so the query budget stays cumulative.',
         '- `python3 "$MIA" memory list --limit 10`, `python3 "$MIA" say "progress"`, `sh "$LIB/thread.sh"`, and `sh "$LIB/reply.sh" "$PAPERCLIP_RUN_SCRATCH_DIR/mia-reply.md"` are the supported context/delivery commands.',
+        'For a one-day question about how many bonuses were issued and which programs/types: after reading required instructions, run `python3 "$MIA_BONUS_DAILY" --date YYYY-MM-DD` with the requested UTC date. This procedure validates live schemas and executes four reads THROUGH the assigned mia.py guards and cumulative query budget; it returns per-program/type counts, independent totals, test/missing-join checks, unawarded records, ledger and freshness. No figures are cached. Use this existing procedure instead of reinventing equivalent SQL. If all_checks_pass is false or the question has a different scope, inspect evidence and do the necessary additional guarded checks before answering. Keep all normal instructions, reply/visualization and limitations requirements.',
         "Reduce model round trips, not verification: batch any outstanding context/schema reads in one shell call; execute independent guarded reads sequentially in one call when their inputs are already known. Do not reprint files already loaded in context. Keep all required brand, metric, freshness and reconciliation checks.",
         ...(preloaded ? [] : [
           "Suggested first read (all assigned instructions remain authoritative):",
@@ -195,7 +196,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsRootPath: asString(config.instructionsRootPath, ""),
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
   });
-  const preload = env.BRAND_SLUG === "motor" && config.preloadInstructions !== false && instructionsAsset && skillsAsset;
+  const preload = env.BRAND_SLUG === "motor" && config.preloadInstructions === true && instructionsAsset && skillsAsset;
   const instructionSections: string[] = [];
   if (preload) {
     for (const file of [...new Set([instructionsAsset.entryFile, "MAIN.md"])]) {
@@ -263,6 +264,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (toolkit) {
         env.LIB = path.posix.join(env.PAPERCLIP_SKILLS_ROOT, toolkit.runtimeName, "scripts");
         env.MIA = path.posix.join(env.LIB, "mia.py");
+        if (env.BRAND_SLUG === "motor") env.MIA_BONUS_DAILY = path.posix.join(prepared.assetDirs.gooseSkills, "motor-bonus-daily.py");
       }
     }
     env.PAPERCLIP_WORKSPACE_CWD = effectiveCwd;
