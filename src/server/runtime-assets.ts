@@ -16,6 +16,9 @@ export async function createGooseSkillsAsset(config: Record<string, unknown>, co
   const entries = await readPaperclipRuntimeSkillEntries(config, moduleDir);
   const desired = new Set(resolveLegacyPaperclipDesiredSkillNames(config, entries));
   const selected = entries.filter((entry) => desired.has(entry.key));
+  if (desired.has(`company/${companyId}/mia3-lib`) && !selected.some((entry) => entry.key === `company/${companyId}/mia3-lib`)) {
+    throw new Error("Assigned MIA toolkit unavailable: mia3-lib");
+  }
   if (!selected.length) return null;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-skills-"));
   const relativeDir = `${companyId}/skills`;

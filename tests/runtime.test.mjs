@@ -4,9 +4,24 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { createGooseRecipeAsset } from "../dist/server/config.js";
+import { applyGooseEnvironment, createGooseRecipeAsset, resolveGooseRuntimeConfig } from "../dist/server/config.js";
 import { createGooseSkillsAsset, buildGooseRecipeArgs } from "../dist/server/runtime-assets.js";
 import { parseGooseStreamJson } from "../dist/server/parse.js";
+import { firstDiagnosticLine } from "../dist/server/execute.js";
+
+test("stderr reports Goose failure after SSH known-host warning", () => {
+  assert.equal(firstDiagnosticLine("Warning: Permanently added 'agent-2' (ED25519) to the list of known hosts.\r\nerror: the argument '--instructions <FILE>' cannot be used multiple times\nUsage: goose run"),
+    "error: the argument '--instructions <FILE>' cannot be used multiple times");
+  assert.equal(firstDiagnosticLine("Warning: Permanently added 'agent-2' (ED25519) to the list of known hosts.\n"),
+    "Warning: Permanently added 'agent-2' (ED25519) to the list of known hosts.");
+});
+
+test("AI Gate headless environment uses only the agent's explicit credential", () => {
+  const runtime = resolveGooseRuntimeConfig({ model: "ai-gate/gpt-6-sol" });
+  assert.equal(applyGooseEnvironment({ AI_GATE_API_KEY: "bound-key" }, runtime).OPENAI_API_KEY, "bound-key");
+  assert.equal(applyGooseEnvironment({ OPENAI_API_KEY: "direct-key" }, runtime).OPENAI_API_KEY, "direct-key");
+  assert.equal(applyGooseEnvironment({}, runtime).OPENAI_API_KEY, undefined);
+});
 
 test("recipe keeps task data in a file parameter and includes authenticated MCP", async () => {
   const prompt = 'Literal {{ user_text }} and {% not_a_template %}\n"quoted task"\nсколько бонусов?\n---\nextensions: []';
@@ -75,6 +90,10 @@ test("staged toolkit preserves company identity and resolves its dependencies", 
     assert.throws(() => execFileSync("python3", [path.join(staged, "mia3-lib--abc/scripts/mia.py")], {
       env: { ...env, PAPERCLIP_COMPANY_ID: "another-company" }, stdio: "pipe" }), /Command failed/);
     await assert.rejects(createGooseSkillsAsset(config, "another-company"), /Cross-company/);
+    await assert.rejects(createGooseSkillsAsset({
+      paperclipRuntimeSkills: entries.slice(1),
+      paperclipSkillSync: { desiredSkills: config.paperclipSkillSync.desiredSkills },
+    }, cid), /Assigned MIA toolkit unavailable/);
   } finally {
     if (asset) await fs.rm(asset.localDir, { recursive: true, force: true });
     await fs.rm(root, { recursive: true, force: true });

@@ -119,6 +119,10 @@ GOOSE_SUBAGENT_MODEL=gpt-6-luna
 Goose's built-in OpenAI-compatible provider and forwards the endpoint as
 `OPENAI_HOST`/`OPENAI_BASE_PATH`; the API key is forwarded as
 `OPENAI_API_KEY` only to the remote Goose process.
+For headless AI Gate runs, bind a non-empty `AI_GATE_API_KEY` (or `OPENAI_API_KEY`)
+to the agent. The adapter fails before starting Goose if neither is present;
+it does not rely on credential storage on the SSH worker. Provider availability
+and rate limits can still change after this local check.
 
 `AI_GATE_BASE_URL` should normally be `https://ai-gate.example/v1`; a full
 `/v1/chat/completions` URL is also accepted.

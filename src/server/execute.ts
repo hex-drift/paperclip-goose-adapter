@@ -41,9 +41,14 @@ import {
 import { parseGooseStreamJson } from "./parse.js";
 import { buildGooseRecipeArgs, createGooseSkillsAsset } from "./runtime-assets.js";
 import { createInstructionContext, type InstructionDocument } from "./instruction-context.js";
+import { compactBonusCanary } from "./compact-canary.js";
 
-function firstNonEmptyLine(text: string): string {
-  return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+export function firstDiagnosticLine(text: string): string {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.find((line) => /^error(?::|\s)/i.test(line))
+    ?? lines.find((line) => !/^Warning: Permanently added .+ to the list of known hosts\.$/.test(line))
+    ?? lines[0]
+    ?? "";
 }
 
 function requireSshTarget(ctx: AdapterExecutionContext) {
@@ -85,7 +90,7 @@ function addContextEnvironment(
   if (wakePayload) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayload;
 }
 
-function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false, indexed = false, motorReportTool = false): string {
+function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false, indexed = false, motorReportTool = false, compactCanary = false): string {
   const config = ctx.config;
   const context = ctx.context;
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -104,7 +109,9 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         "## Motor data execution directive",
         "",
         "This task asks for Motor production data. Do not investigate Paperclip OpenAPI, connections, or generic runtime tools first.",
-        indexed
+        compactCanary
+          ? 'The owner-approved compact daily-bonus rules are loaded in the system context. Apply them for this one-day Motor bonus question; read the original indexed documents via `$PAPERCLIP_INSTRUCTION_READER` for other scopes or follow-ups. `$MIA` and `$LIB` are already resolved.'
+          : indexed
           ? 'Use the assigned instruction index in the system context. Entry documents marked loaded need no reread. Read the required skills or relevant complete sections via `python3 "$PAPERCLIP_INSTRUCTION_READER" read --select DOC[:SECTIONS] ...` and follow next_page until complete. Never use a bulk cat of all skills: Goose truncates shell output beyond 50 KB. `$MIA` and `$LIB` are already resolved.'
           : preloaded
           ? "AGENTS.md, MAIN.md and the six core analytical skills are already in the system context. Start with profile/context/schema checks, not cat/rg of those same documents. `$MIA` is the resolved toolkit and `$LIB` its scripts directory."
@@ -178,6 +185,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionCwd: adapterExecutionTargetRemoteCwd(target, cwd),
   });
   env = applyGooseEnvironment(env, runtimeConfig);
+  if (runtimeConfig.provider === "ai-gate" && !env.OPENAI_API_KEY?.trim()) {
+    throw new Error("Goose AI Gate authentication unavailable: bind AI_GATE_API_KEY or OPENAI_API_KEY to this agent");
+  }
 
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(target, asNumber(config.timeoutSec, 0));
   const graceSec = asNumber(config.graceSec, 20);
@@ -199,8 +209,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsRootPath: asString(config.instructionsRootPath, ""),
     instructionsEntryFile: asString(config.instructionsEntryFile, "AGENTS.md"),
   });
+  if (env.BRAND_SLUG === "motor" && env.CLICKHOUSE_HOST && (
+    !skillsAsset?.entries.some((entry) => entry.key === `company/${agent.companyId}/mia3-lib`)
+    || !instructionsAsset
+  )) {
+    throw new Error("Motor data runtime incomplete: assigned MIA toolkit or instructions unavailable");
+  }
   const preload = env.BRAND_SLUG === "motor" && config.preloadInstructions === true && instructionsAsset && skillsAsset;
   let instructionContext: Awaited<ReturnType<typeof createInstructionContext>> | null = null;
+  let canaryInstructions: string | null = null;
+  let canaryActive = false;
   if (!preload && instructionsAsset) {
     const documents: InstructionDocument[] = [{ id: "agent-entry", file: path.join(instructionsAsset.localDir, instructionsAsset.entryFile), preload: true }];
     const mainFile = path.join(instructionsAsset.localDir, "MAIN.md");
@@ -211,6 +229,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       documents.push({ id: entry.runtimeName, file: path.join(skillsAsset!.localDir, skillsAsset!.relativeDir, entry.runtimeName, "SKILL.md") });
     }
     instructionContext = await createInstructionContext(documents);
+    if (env.BRAND_SLUG === "motor" && runtimeMcpServers.length === 0 && config.compactBonusCanary === true
+      && Boolean(env.PAPERCLIP_TASK_ID)
+      && !env.PAPERCLIP_WAKE_COMMENT_ID
+      && asString(config.compactBonusCanaryIssueId, "") === env.PAPERCLIP_TASK_ID) {
+      const canary = await compactBonusCanary({
+        enabled: true, packPath: asString(config.compactBonusPackPath, ""),
+        agentId: agent.id, companyId: agent.companyId, issueId: env.PAPERCLIP_TASK_ID,
+        wakeReason: env.PAPERCLIP_WAKE_REASON ?? "", issue: context.paperclipIssue, documents,
+        fullInstructions: instructionContext.instructions,
+      });
+      canaryInstructions = canary.instructions;
+      canaryActive = canary.active;
+    }
   }
   const instructionSections: string[] = [];
   if (preload) {
@@ -224,15 +255,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
-  const instructions = (instructionContext?.instructions ?? instructionSections.join("\n\n"))
+  const instructions = (canaryInstructions ?? instructionContext?.instructions ?? instructionSections.join("\n\n"))
     .replaceAll("/paperclip/.claude/skills", "${PAPERCLIP_SKILLS_ROOT}");
   const motorReportTool = config.motorReportTool !== false && env.BRAND_SLUG === "motor"
     && Boolean(env.CLICKHOUSE_HOST && env.PAPERCLIP_TASK_ID)
     && Boolean(skillsAsset?.entries.some(e => e.key === `company/${agent.companyId}/mia3-lib`));
-  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload), Boolean(instructionContext), motorReportTool);
+  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload), Boolean(instructionContext), motorReportTool, canaryActive);
   const recipeAsset = await createGooseRecipeAsset({
     mcpServers: runtimeMcpServers, provider: runtimeConfig.provider, model: runtimeConfig.model,
-    maxTurns: runtimeConfig.maxTurns, prompt, instructions, instructionIndex: Boolean(instructionContext), motorReportTool,
+    maxTurns: runtimeConfig.maxTurns, prompt, instructions, instructionIndex: Boolean(instructionContext),
+    compactCanary: canaryActive, motorReportTool,
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let localRecipeRoot: string | null = recipeAsset.localDir;
@@ -319,6 +351,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandNotes: [
         "External grok_local override: runs Goose over SSH.",
         ...(motorReportTool ? ["Attached run-scoped motor-report stdio MCP prepare_bonus_report tool."] : []),
+        ...(config.compactBonusCanary === true ? [canaryActive ? "Hash-pinned compact Motor bonus canary active." : "Compact Motor bonus canary inactive; full indexed instructions used."] : []),
         `Goose main model: ${runtimeConfig.provider}/${runtimeConfig.model}`,
         runtimeConfig.subagentModel
           ? `Goose subagent model: ${runtimeConfig.subagentProvider ?? runtimeConfig.provider}/${runtimeConfig.subagentModel}`
@@ -357,7 +390,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onRuntimeProgress: ctx.onRuntimeProgress,
     });
     const parsed = parseGooseStreamJson(proc.stdout);
-    const errorMessage = parsed.errorMessage || firstNonEmptyLine(proc.stderr) || null;
+    const errorMessage = parsed.errorMessage || firstDiagnosticLine(proc.stderr) || null;
     const failed = proc.timedOut || (proc.exitCode ?? 0) !== 0 || Boolean(parsed.errorMessage);
     return {
       exitCode: failed && (proc.exitCode ?? 0) === 0 ? 1 : proc.exitCode,

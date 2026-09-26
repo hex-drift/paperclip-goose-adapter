@@ -104,11 +104,14 @@ export async function testEnvironment(
       hint: "Set AI_GATE_BASE_URL if the remote Goose host does not already have an ai-gate custom provider.",
     });
   }
-  if (runtime.provider === "ai-gate" && !envConfig.AI_GATE_API_KEY) {
+  if (runtime.provider === "ai-gate" && ![envConfig.AI_GATE_API_KEY, envConfig.OPENAI_API_KEY].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  )) {
     checks.push({
       code: "ai_gate_key_not_in_agent_env",
-      level: "info",
-      message: "AI_GATE_API_KEY is not set in this agent environment; Goose will use remote credential storage if configured.",
+      level: "error",
+      message: "AI Gate key is not set in this agent environment.",
+      hint: "Bind AI_GATE_API_KEY or OPENAI_API_KEY as an agent secret; headless Goose requires an explicit key.",
     });
   }
 

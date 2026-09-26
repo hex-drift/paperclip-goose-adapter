@@ -2,6 +2,10 @@
 
 Status: proposal only. Current agent instructions and skill policies are unchanged.
 
+The source-hash snapshot, mandatory-rule map and unresolved source conflicts are
+recorded in [motor-bonus-instruction-coverage.md](motor-bonus-instruction-coverage.md).
+No compact instruction pack has been activated or benchmarked yet.
+
 ## Why
 
 IGAAA-612 completed in 46 seconds, but reported 213,640 cumulative input tokens

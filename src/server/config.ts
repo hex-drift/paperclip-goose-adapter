@@ -196,6 +196,7 @@ export async function createGooseRecipeAsset(input: {
   prompt: string;
   instructions?: string;
   instructionIndex?: boolean;
+  compactCanary?: boolean;
   motorReportTool?: boolean;
 }): Promise<{ localDir: string; recipeFile: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-recipe-"));
@@ -211,7 +212,9 @@ export async function createGooseRecipeAsset(input: {
     instructions: [
       "You are running a headless Paperclip automation. Complete the supplied task using its assigned instructions and tools.",
       input.instructions
-        ? input.instructionIndex
+        ? input.compactCanary
+          ? "An owner-approved, hash-pinned daily Motor bonus pack follows. Apply it only to the matching task; complete original documents remain available via PAPERCLIP_INSTRUCTION_READER for other scopes."
+          : input.instructionIndex
           ? "A versioned index and selected complete entry documents follow. Only documents explicitly marked loaded have been read; use PAPERCLIP_INSTRUCTION_READER for other required documents/sections and verify END_PAGE plus continuation markers. Never concatenate all skills into one shell response."
           : "The complete assigned instruction entry, MAIN.md and core analytical skills are included below. They have already been loaded: apply them without rereading those files. Read referenced files not included here when needed."
         : "Read PAPERCLIP_INSTRUCTIONS_PATH when set; relative instruction references resolve from its directory.",
