@@ -10,7 +10,7 @@ import { parseGooseStreamJson } from "../dist/server/parse.js";
 
 test("recipe keeps task data in a file parameter and includes authenticated MCP", async () => {
   const prompt = 'Literal {{ user_text }} and {% not_a_template %}\n"quoted task"\nсколько бонусов?\n---\nextensions: []';
-  const asset = await createGooseRecipeAsset({ provider: "ai-gate", model: "gpt-6-sol", maxTurns: 32,
+  const asset = await createGooseRecipeAsset({ provider: "ai-gate", model: "gpt-6-sol", maxTurns: 32, motorReportTool: true,
     prompt, instructions: 'Full assigned policy\nKeep {{ literal }} and "quotes" unchanged.\nEnd of policy.',
     mcpServers: [{ name: "Paperclip projects", connectionId: "project", url: "https://example.test/mcp", token: "test-token" }] });
   try {
@@ -21,8 +21,11 @@ test("recipe keeps task data in a file parameter and includes authenticated MCP"
     assert.ok(source.includes("prompt: |\n  {{ task | indent(2) }}"));
     assert.equal(recipe.parameters[0].input_type, "file");
     assert.equal(await fs.readFile(path.join(asset.localDir, "task.md"), "utf8"), prompt);
-    assert.deepEqual(recipe.extensions.map(e => e.type), ["platform", "streamable_http"]);
-    assert.equal(recipe.extensions[1].headers.Authorization, "Bearer test-token");
+    assert.deepEqual(recipe.extensions.map(e => e.type), ["platform", "stdio", "streamable_http"]);
+    assert.equal(recipe.extensions[2].headers.Authorization, "Bearer test-token");
+    assert.equal(recipe.extensions[1].cmd, "python3");
+    assert.deepEqual(recipe.extensions[1].available_tools, ["prepare_bonus_report"]);
+    assert.ok((await fs.readFile(path.join(asset.localDir, "motor-report-mcp.py"), "utf8")).includes("def prepare("));
     assert.equal((await fs.stat(asset.recipeFile)).mode & 0o777, 0o600);
     if (process.env.GOOSE_TEST_BINARY) {
       const binary = process.env.GOOSE_TEST_BINARY;
@@ -32,6 +35,7 @@ test("recipe keeps task data in a file parameter and includes authenticated MCP"
       assert.ok(rendered.includes("{{ user_text }}"));
       assert.ok(rendered.includes("{% not_a_template %}"));
       assert.ok(rendered.includes("type: platform"));
+      assert.ok(rendered.includes(`${asset.localDir}/motor-report-mcp.py`));
       assert.ok(rendered.includes('Keep {{ literal }} and "quotes" unchanged.'));
       assert.ok(rendered.includes("End of policy."));
     }

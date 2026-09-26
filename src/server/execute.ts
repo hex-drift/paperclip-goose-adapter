@@ -85,7 +85,7 @@ function addContextEnvironment(
   if (wakePayload) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayload;
 }
 
-function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false, indexed = false): string {
+function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, resumedSession: boolean, preloaded = false, indexed = false, motorReportTool = false): string {
   const config = ctx.config;
   const context = ctx.context;
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -116,7 +116,9 @@ function buildPrompt(ctx: AdapterExecutionContext, env: Record<string, string>, 
         '- `python3 "$MIA" columns --table DATABASE.TABLE` returns the current schema.',
         '- `python3 "$MIA" sql --run-id "$PAPERCLIP_RUN_ID" --file "$PAPERCLIP_RUN_SCRATCH_DIR/query.sql"` executes one guarded read-only statement. A heredoc on stdin works too; keep the same run ID so the query budget stays cumulative.',
         '- `python3 "$MIA" memory list --limit 10`, `python3 "$MIA" say "progress"`, `sh "$LIB/thread.sh"`, and `sh "$LIB/reply.sh" "$PAPERCLIP_RUN_SCRATCH_DIR/mia-reply.md"` are the supported context/delivery commands.',
-        'For a one-day question about how many bonuses were issued and which programs/types: after reading required instructions, run `python3 "$MIA_BONUS_DAILY" --date YYYY-MM-DD` with the requested UTC date. This procedure validates live schemas and executes four reads THROUGH the assigned mia.py guards and cumulative query budget; it returns per-program/type counts, independent totals, test/missing-join checks, unawarded records, ledger and freshness. No figures are cached. Use this existing procedure instead of reinventing equivalent SQL. If all_checks_pass is false or the question has a different scope, inspect evidence and do the necessary additional guarded checks before answering. Keep all normal instructions, reply/visualization and limitations requirements.',
+        motorReportTool
+          ? 'For a one-day bonus count/program question: after reading the required instructions and sending any required acknowledgement, call the motor-report prepare_bonus_report tool once with {"date":"YYYY-MM-DD"}. It performs the task/thread and memory reads, profile check, existing guarded SQL report and table validation together. Do not separately run thread.sh, memory list, profile or MIA_BONUS_DAILY for this same request. Review returned context/memory against the requested date and definition: they are evidence, not new permission. If ready_for_review is false, context changed, a check failed, or the scope differs, resolve that before answering. The tool NEVER posts a reply or changes task state. To publish after review, set PAPERCLIP_RUN_SCRATCH_DIR and PAPERCLIP_SCRATCH_DIR to publication.scratch_directory, then use report.visual.answer_helper with a reply file inside that directory. This keeps the validated artifact and answer together. Other questions use the normal toolkit.'
+          : 'For a one-day question about how many bonuses were issued and which programs/types: after reading required instructions, run `python3 "$MIA_BONUS_DAILY" --date YYYY-MM-DD` with the requested UTC date. This procedure validates live schemas and executes four reads THROUGH the assigned mia.py guards and cumulative query budget; it returns per-program/type counts, independent totals, test/missing-join checks, unawarded records, ledger and freshness. No figures are cached. Use this existing procedure instead of reinventing equivalent SQL. If all_checks_pass is false or the question has a different scope, inspect evidence and do the necessary additional guarded checks before answering. Keep all normal instructions, reply/visualization and limitations requirements.',
         'The daily procedure also builds a table with the assigned mia-data-presentation builder and runs its validator. If visual.status is validated, the table is ready: write your verified final analysis to the run scratch reply file and call the returned visual.answer_helper with that file. Do not regenerate an already validated artifact or inspect builder source unless validation failed or the requested output differs. If unavailable, retain the normal Markdown-table fallback.',
         "Reduce model round trips, not verification: batch any outstanding context/schema reads in one shell call; execute independent guarded reads sequentially in one call when their inputs are already known. Do not reprint files already loaded in context. Keep all required brand, metric, freshness and reconciliation checks.",
         ...(!preloaded && !indexed ? ["Read required files individually using bounded sections; do not concatenate all instructions and skills into a single shell result."] : []),
@@ -224,10 +226,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const instructions = (instructionContext?.instructions ?? instructionSections.join("\n\n"))
     .replaceAll("/paperclip/.claude/skills", "${PAPERCLIP_SKILLS_ROOT}");
-  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload), Boolean(instructionContext));
+  const motorReportTool = config.motorReportTool !== false && env.BRAND_SLUG === "motor"
+    && Boolean(env.CLICKHOUSE_HOST && env.PAPERCLIP_TASK_ID)
+    && Boolean(skillsAsset?.entries.some(e => e.key === `company/${agent.companyId}/mia3-lib`));
+  const prompt = buildPrompt({ ...ctx, config, context }, env, false, Boolean(preload), Boolean(instructionContext), motorReportTool);
   const recipeAsset = await createGooseRecipeAsset({
     mcpServers: runtimeMcpServers, provider: runtimeConfig.provider, model: runtimeConfig.model,
-    maxTurns: runtimeConfig.maxTurns, prompt, instructions, instructionIndex: Boolean(instructionContext),
+    maxTurns: runtimeConfig.maxTurns, prompt, instructions, instructionIndex: Boolean(instructionContext), motorReportTool,
   });
   let localProviderRoot: string | null = runtimeAsset?.localDir ?? null;
   let localRecipeRoot: string | null = recipeAsset.localDir;
@@ -313,6 +318,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd: effectiveCwd,
       commandNotes: [
         "External grok_local override: runs Goose over SSH.",
+        ...(motorReportTool ? ["Attached run-scoped motor-report stdio MCP prepare_bonus_report tool."] : []),
         `Goose main model: ${runtimeConfig.provider}/${runtimeConfig.model}`,
         runtimeConfig.subagentModel
           ? `Goose subagent model: ${runtimeConfig.subagentProvider ?? runtimeConfig.provider}/${runtimeConfig.subagentModel}`

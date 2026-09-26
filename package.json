@@ -14,7 +14,8 @@
   "files": [
     "dist",
     "scripts/motor-bonus-daily.py",
-    "scripts/read-instructions.py"
+    "scripts/read-instructions.py",
+    "scripts/motor-report-mcp.py"
   ],
   "scripts": {
     "build": "tsc",

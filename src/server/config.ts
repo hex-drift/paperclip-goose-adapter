@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface GooseModelSelection {
   provider: string;
@@ -195,6 +196,7 @@ export async function createGooseRecipeAsset(input: {
   prompt: string;
   instructions?: string;
   instructionIndex?: boolean;
+  motorReportTool?: boolean;
 }): Promise<{ localDir: string; recipeFile: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-goose-recipe-"));
   const recipeFile = path.join(root, "paperclip-motor.yaml");
@@ -224,6 +226,17 @@ export async function createGooseRecipeAsset(input: {
         bundled: true,
         description: "Headless shell and file tools.",
       },
+      ...(input.motorReportTool ? [{
+        type: "stdio",
+        name: "motor-report",
+        description: "Run-scoped Motor context and guarded daily bonus report; no publication.",
+        cmd: "python3",
+        args: ["{{ recipe_dir }}/motor-report-mcp.py"],
+        env_keys: [],
+        envs: {},
+        timeout: 120,
+        available_tools: ["prepare_bonus_report"],
+      }] : []),
       ...input.mcpServers.map((server, index) => ({
         type: "streamable_http",
         name: recipeExtensionName(server.name || server.connectionId, index),
@@ -250,6 +263,7 @@ export async function createGooseRecipeAsset(input: {
   await fs.writeFile(recipeFile, yaml, { mode: 0o600 });
   await fs.writeFile(path.join(root, "task.md"), input.prompt, { mode: 0o600 });
   if (input.instructions) await fs.writeFile(path.join(root, "instructions.md"), input.instructions, { mode: 0o600 });
+  if (input.motorReportTool) await fs.copyFile(fileURLToPath(new URL("../../scripts/motor-report-mcp.py", import.meta.url)), path.join(root, "motor-report-mcp.py"));
   return { localDir: root, recipeFile };
 }
 
