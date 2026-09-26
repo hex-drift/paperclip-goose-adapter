@@ -72,7 +72,9 @@ class MCPTests(unittest.TestCase):
                 self.assertEqual(argv[-2:], ["--date", "2026-09-24"])
                 out = directory / "bonus-daily"
                 out.mkdir()
-                (out / "report.json").write_text(json.dumps({"date": "2026-09-24", "timezone": "UTC", "all_checks_pass": True}))
+                (out / "report.json").write_text(json.dumps({"date": "2026-09-24", "timezone": "UTC", "all_checks_pass": True,
+                    "totals": {"assignments": "333", "programs": "84"},
+                    "top_programs": [{"assignments": str(n)} for n in [56,32,22,18,13,13,10,7,7,7]]}))
             return "memory evidence" if name == "memory" else "ok"
         return call
 
@@ -84,6 +86,8 @@ class MCPTests(unittest.TestCase):
         self.assertEqual([c[0] for c in calls], ["profile", "memory", "report"])
         self.assertTrue(result["ready_for_review"])
         self.assertFalse(result["publication"]["performed"])
+        self.assertEqual(result["report"]["display_totals"]["shown_top"], {"programs": 10, "assignments": 185, "remaining_programs": 74, "remaining_assignments": 148})
+        self.assertEqual(result["report"]["display_totals"]["top_three"]["remaining_programs"], 81)
         self.assertEqual(result["context"]["messages"][0]["authorType"], "user")
         self.assertEqual(set(result["timings_seconds"]), {"thread", "profile", "memory", "report", "context_recheck"})
         self.assertTrue(Path(result["publication"]["scratch_directory"]).is_relative_to(Path(self.env["PAPERCLIP_RUN_SCRATCH_DIR"])))

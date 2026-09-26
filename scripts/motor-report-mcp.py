@@ -174,6 +174,15 @@ def prepare(arguments, env=None):
     evidence = json.loads((directory / "bonus-daily/report.json").read_text())
     if evidence.get("date") != day or evidence.get("timezone") != "UTC":
         raise ToolFailure("report_scope_mismatch")
+    top = evidence.get("top_programs", [])
+    totals = evidence.get("totals", {})
+    if "assignments" in totals and "programs" in totals:
+        def coverage(rows):
+            assignments = sum(int(row["assignments"]) for row in rows)
+            return {"programs": len(rows), "assignments": assignments,
+                    "remaining_programs": int(totals["programs"]) - len(rows),
+                    "remaining_assignments": int(totals["assignments"]) - assignments}
+        evidence["display_totals"] = {"top_three": coverage(top[:3]), "shown_top": coverage(top)}
     latest, latest_fingerprint = measure("context_recheck", lambda: read_context(env))
     changed = fingerprint != latest_fingerprint
     result = {
@@ -184,7 +193,7 @@ def prepare(arguments, env=None):
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "ready_for_review": evidence.get("all_checks_pass") is True and not changed,
         "publication": {"performed": False, "scratch_directory": str(directory),
-            "instruction": "Review the returned thread/memory against the requested date, scope and definitions. If context changed, reconcile it first. After review, use the existing answer_helper with PAPERCLIP_RUN_SCRATCH_DIR and PAPERCLIP_SCRATCH_DIR set to this scratch_directory. Do not use report values if the current request differs. Never publish raw context/tool output."},
+            "instruction": "Review thread/memory against the requested date, scope and definitions. If context changed, reconcile it first. Use report.display_totals for top/remaining arithmetic: top_three and shown_top describe DIFFERENT populations; never combine their counts. Review the whole draft before publishing it once. Use the existing answer_helper with PAPERCLIP_RUN_SCRATCH_DIR and PAPERCLIP_SCRATCH_DIR set to this scratch_directory. Do not use report values if the current request differs. Never publish raw context/tool output."},
     }
     if len(json.dumps(result, ensure_ascii=False).encode()) > 60_000:
         raise ToolFailure("result_too_large_use_context_reader")
